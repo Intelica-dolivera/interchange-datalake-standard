@@ -1,0 +1,12 @@
+{
+  "Variables": {
+    "DYNAMODB_TABLE_FILE_CONTROL": "itl-0004-itx-dev-dynamo-file_control-02",
+    "DYNAMODB_TABLE_FILE_PATTERN": "itl-0004-itx-dev-dynamo-file_pattern-02",    
+    "S3_BUCKET_LANDING": "itl-0004-itx-dev-poc-02-landing",
+    "S3_BUCKET_STAGING": "itl-0004-itx-dev-poc-02-staging",
+    "UNZIP_FUNCTION_NAME": "itl-0004-itx-dev-intchg-02-itx-unzip",
+    "STEP_FUNCTION_VI_ARN": "arn:aws:states:eu-south-2:861276092327:stateMachine:itl-0004-itx-dev-intchg-02-sfn",    
+    "VISA_ARDEF_FUNCTION_NAME": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-itx-ardef",
+    "MASTERCARD_IAR_FUNCTION_NAME": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-itx-iar"
+  }
+}
