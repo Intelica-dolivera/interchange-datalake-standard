@@ -216,18 +216,29 @@ def calcular_content_hash(bucket: str, key: str) -> str:
     """
     Calcula el MD5 del archivo en streaming, sin cargarlo completo en RAM.
 
+    Por qué streaming:
+      El método anterior hacía response['Body'].read() que descarga el archivo
+      completo en memoria. Para archivos de 1.5GB esto puede causar OOM o
+      timeout en el Lambda Router, resultando en content_hash = "" y
+      generando nombres de archivo ".parquet" que Spark ignora silenciosamente.
+
     Estrategia:
-      1. Usar S3 ETag si el archivo fue subido en PUT simple (ETag = MD5)
-      2. Si multipart → calcular MD5 en streaming leyendo chunks de 1MB
+      1. Intentar usar el S3 ETag si el archivo fue subido en un PUT simple
+         (el ETag es el MD5 cuando no hay multipart upload).
+      2. Si el ETag tiene el sufijo "-N" (multipart), calcular MD5 en streaming
+         leyendo chunks de 1MB. Nunca hay más de 1MB en RAM.
     """
     try:
+        # Obtener metadata sin descargar el archivo
         head = s3.head_object(Bucket=bucket, Key=key)
         etag = head.get('ETag', '').strip('"')
 
+        # ETag sin sufijo "-N" → es el MD5 real del contenido completo
         if etag and '-' not in etag:
             logger.info(f"  content_hash: usando S3 ETag (no multipart)")
             return etag.upper()
 
+        # ETag con "-N" → multipart upload, calcular MD5 en streaming
         logger.info(f"  content_hash: streaming MD5 (multipart)")
         md5      = hashlib.md5()
         response = s3.get_object(Bucket=bucket, Key=key)
@@ -243,10 +254,17 @@ def calcular_content_hash(bucket: str, key: str) -> str:
 
     except Exception as e:
         logger.error(f"Error calculando content_hash de s3://{bucket}/{key}: {e}")
+        # IMPORTANTE: No retornar "" — usar file_id como fallback garantiza
+        # que el nombre del Parquet nunca sea ".parquet" (archivo oculto).
+        # El caller debe pasar file_id como fallback.
         return ""
 
 
 def obtener_file_size(bucket: str, key: str, event_size: int = 0) -> int:
+    """
+    Obtiene el tamaño del archivo. Usa el evento S3 como fallback
+    para evitar un request extra si el evento ya trae el dato.
+    """
     if event_size > 0:
         return event_size
     try:
@@ -278,8 +296,14 @@ def convertir_fecha_juliana(texto_juliano: str) -> Optional[str]:
 def extraer_fecha(bucket: str, key: str) -> str:
     """
     Extrae la fecha de procesamiento del header del archivo CTF.
-    Lee solo los primeros 50 bytes (Range request).
-    Solo aplica a archivos CTF — no a ZIPs.
+
+    Lee solo los primeros 50 bytes (Range request) para no descargar
+    el archivo completo. Funciona para archivos CTF 168 y VMS 170 chars.
+
+    Posición de la fecha juliana (YYDDD):
+      CTF 168: posición 8:13 de la línea
+      VMS 170: idem, pero la línea tiene 2 bytes extra al inicio (pos 2-4)
+               → ajustamos leyendo desde la posición 10:15
     """
     fecha_default = datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -290,7 +314,9 @@ def extraer_fecha(bucket: str, key: str) -> str:
         if len(cabecera) < 13:
             logger.warning("Header demasiado corto")
             return fecha_default
-
+        
+        # Detectar formato VMS (170 chars → primer carácter desplazado)
+        # Intentar en posición 8:13 (CTF) y 10:15 (VMS) como fallback
         for start, end in [(8, 13), (10, 15)]:
             texto_juliano = cabecera[start:end]
             fecha = convertir_fecha_juliana(texto_juliano)
@@ -432,7 +458,8 @@ def cargar_patrones(customer_code: str = None) -> List[Dict]:
             ExpressionAttributeValues={':active': 1}
         )
         items = response.get('Items', [])
-
+        
+        # Paginar si hay más de 1MB de resultados
         while 'LastEvaluatedKey' in response:
             response = table.scan(
                 FilterExpression='is_active = :active',
@@ -489,6 +516,8 @@ def clasificar_archivo(filename: str, patrones: List[Dict]) -> Optional[Dict]:
 
 def verificar_duplicado(file_id: str, content_hash: str) -> Tuple[str, Optional[str]]:
     """
+    Verifica si el archivo ya fue procesado.
+    
     Returns:
       ("nuevo", None)            → nunca visto
       ("duplicado", file_id)     → mismo nombre Y mismo contenido → ignorar
@@ -522,6 +551,10 @@ def registrar_archivo(
     bucket: str, s3_key: str, file_size: int,
     content_hash: str, clasificacion: Dict, file_date: str
 ) -> bool:
+    """
+    Crea el registro inicial del archivo en DynamoDB.
+    Estado inicial: PENDING.
+    """
     try:
         table = dynamodb.Table(TABLE_FILE_CONTROL)
         direction = clasificacion['direction'].upper()
@@ -557,6 +590,10 @@ def registrar_archivo(
 
 
 def actualizar_estado(file_id: str, estado: str, error: str = None):
+    """
+    Actualiza el estado de procesamiento en DynamoDB.
+    Estados: PENDING → PROCESSING → COMPLETED | FAILED
+    """
     try:
         table   = dynamodb.Table(TABLE_FILE_CONTROL)
         now     = datetime.utcnow().isoformat()
@@ -596,7 +633,13 @@ def start_process(
     bucket: str, s3_key: str, clasificacion: Dict,
     file_date: str, content_hash: str
 ) -> str:
-    
+    """
+    Inicia la ejecución de los procesos con toda la metadata del archivo.
+
+    El content_hash se usa downstream para nombrar los archivos Parquet.
+    NUNCA debe ser vacío: si calcular_content_hash falla, el caller
+    debe pasar file_id como fallback antes de llegar aquí.
+    """
     direction = clasificacion['direction'].upper()
     brand = clasificacion['brand'].upper()
 
@@ -613,7 +656,7 @@ def start_process(
         'brand_id':       brand_id,
         'file_type':      file_type,
         'file_date':      file_date,
-        'content_hash':   content_hash,
+        'content_hash':   content_hash,   # Nunca vacío — ver fallback en handler
     }
 
     execution_name = (
@@ -686,12 +729,14 @@ def lambda_handler(event, context):
         filename = "unknown"
 
         try:
+            # Extraer datos del evento S3
             bucket     = record['s3']['bucket']['name']
             key        = unquote_plus(record['s3']['object']['key'])
             event_size = record['s3']['object'].get('size', 0)
 
             logger.info(f"--- Procesando: s3://{bucket}/{key} ({event_size:,} bytes) ---")
 
+            # Validar estructura del path: CLIENT_ID/filename
             parts = key.split('/')
             if len(parts) < 2:
                 logger.error(f"Path inválido: {key}")
@@ -701,6 +746,7 @@ def lambda_handler(event, context):
             client_id = parts[0]
             filename  = parts[-1]
 
+            # Ignorar archivos ocultos y carpetas vacías
             if not filename or filename.startswith('.'):
                 logger.info(f"Ignorando: {key}")
                 continue

@@ -18,6 +18,7 @@ class _Layer(StrEnum):
     LANDING = auto()
     STAGING = auto()
     OPERATIONAL = auto()
+    REFERENCE = auto() # Bucket de datos de referencia (tabla maestra de ARDEF)
 
 
 class FileStorage:
@@ -28,12 +29,13 @@ class FileStorage:
         LANDING     ->  ITX_S3_BUCKET_LANDING       (default: itl-0004-itx-dev-poc-02-landing)
         STAGING     ->  ITX_S3_BUCKET_STAGING       (default: itl-0004-itx-dev-poc-02-staging)
         OPERATIONAL ->  ITX_S3_BUCKET_OPERATIONAL   (default: itl-0004-itx-dev-poc-02-operational)
+        REFERENCE   ->  ITX_S3_BUCKET_REFERENCE     (default: itl-0004-itx-dev-poc-02-reference)
 
     Estructura de keys en cada bucket:
         LANDING:        {client_id}/{landing_file_name}
         STAGING:        {client_id}/{brand_id}/{file_type}/{date}/{subdir}/{file_id}.parquet
         OPERATIONAL:    {client_id}/{brand_id}/{file_type}/{date}/{subdir}/{file_id}.parquet
-        lu_ardef:       {client_id}/{brand_id}/{file_type}/lu_ardef.parquet
+        REFERENCE:       visa_ardef/lu_ardef.parquet (ruta fija para la tabla maestra ARDEF)
     """
 
     Layer = _Layer
@@ -51,6 +53,7 @@ class FileStorage:
             self.Layer.LANDING: ("ITX_S3_BUCKET_LANDING", "itl-0004-itx-dev-poc-02-landing"),
             self.Layer.STAGING: ("ITX_S3_BUCKET_STAGING", "itl-0004-itx-dev-poc-02-staging"),
             self.Layer.OPERATIONAL: ("ITX_S3_BUCKET_OPERATIONAL", "itl-0004-itx-dev-poc-02-operational"),
+            self.Layer.REFERENCE: ("ITX_S3_BUCKET_REFERENCE", "itl-0004-itx-dev-poc-02-reference"),
         }
         env_var, default = mapping[layer]
         return os.environ.get(env_var, default)
@@ -159,12 +162,22 @@ class FileStorage:
         buffer = io.BytesIO(response["Body"].read())
         return pd.read_parquet(buffer)
     
-    def read_parquet_by_filepath(self, filepath: str) -> pd.DataFrame:
+    def read_parquet_by_filepath(
+        self, 
+        filepath: str,
+        layer: Layer = _Layer.REFERENCE,
+    ) -> pd.DataFrame:
         """
-        Lee un parquet desde el bucket OPERATIONAL usando una S3 key directa.
+        Lee un parquet desde S3 usando una S3 key directa.
         Lanza FileNotFoundError si la key no existe (primera ejecución de lu_ardef).
+
+        Args:
+            filepath:   S3 key dentro del bucket de la capa indicada.
+            layer:      capa S3 donde reside el archivo.
+                        Default = REFERENCE (itl-0004-itx-dev-poc-02-reference),
+                        que es donde vive lu_ardef.parquet
         """
-        bucket = self._get_bucket(self.Layer.OPERATIONAL)
+        bucket = self._get_bucket(layer)
 
         log.logger.debug(f"Leyendo parquet por key: s3//{bucket}/{filepath}")
 
@@ -213,13 +226,24 @@ class FileStorage:
         filepath: str,
         index: bool = False,
         *,
+        layer: Layer = _Layer.REFERENCE,
         schema: pa.Schema | None = None,
         compression: str = "snappy",
     ) -> None:
         """
-        Sube un parquet al bucket OPERATIONAL usando una S3 key directa
+        Sube un parquet a S3 usando una S3 key directa.
+
+        Args:
+            data:           DataFrame a serializar.
+            filepath:       S3 key dentro del bucket de la capa indicada.
+            index:          incluir índice pandas en el parquet.
+            layer:          capa S3 de destino.
+                            Default = REFERENCE (itl-0004-itx-dev-poc-02-reference),
+                            que es donde vive la maestra de ardef
+            schema:         schema PyArrow opcional para forzar tipos en la escritura.
+            compression:    algoritmo de compresión parquet (default: snappy).
         """
-        bucket = self._get_bucket(self.Layer.OPERATIONAL)
+        bucket = self._get_bucket(layer)
         buffer = io.BytesIO()
 
         if schema is None:
@@ -243,21 +267,23 @@ class FileStorage:
 
     def get_lu_ardef_filepath(
         self, 
-        file_id: str,
-        file_processing_date: str,
+        file_id: str = "",
+        file_processing_date: str = "",
         filename: str = "lu_ardef.parquet",
     ) -> str:
         """
-        Retorna la S3 Key de lu_ardef en el bucket OPERATIONAL.
-        Ejemplo: 'BTRLRO/VI/ARDEF/lu_ardef.parquet'
+        Retorna la S3 key de la maestra ARDEF dentro del bucket REFERENCE.
+
+        La ruta es fija e independiente del cliente o fecha de procesamiento:
+            visa_ardef/
+        
+        Bucket: itl-0004-itx-dev-poc-02-reference (Layer.REFERENCE)
+        ARN: arn:aws:s3:::itl-0004-itx-dev-poc-02-reference
+
+        Args:
+            file_id, file_processing_date, filename
         """
-        details = self._get_file_details(file_id, file_processing_date)
-        return "/".join([
-            details["client_id"],
-            details["brand_id"],
-            details["file_type"],
-            filename,
-        ])
+        return "visa_ardef/data.parquet"
     
     def get_list_files_folderpath(
         self,

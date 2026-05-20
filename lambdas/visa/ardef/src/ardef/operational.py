@@ -12,7 +12,8 @@ def _build_ardef_operational_dataframe(
         file_processing_date: str,
 ) -> pd.DataFrame:
     """
-    Recibe el dataframe CLEAN (300_ARDEF_CLN) y lo devuelve para presistir en la capa OPERATIONAL.
+    Recibe el dataframe CLEAN (300_ARDEF_CLN) y lo devuelve para presistir 
+    en la capa OPERATIONAL.
 
     No se aplica mas reglas de transformación adicionales.
     """

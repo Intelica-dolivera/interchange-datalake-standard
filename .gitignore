@@ -20,3 +20,4 @@ itx-audit-*/
 .DS_Store
 Thumbs.db
 *.log
+*inventory-to-rename.txt

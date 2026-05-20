@@ -43,8 +43,8 @@ def _build_ardef_transform_dataframe(
             f"file_processing_date={file_processing_date}"
         )
         meta_cols = [
-            "file_id", "file_processing_date", "ardefe_version", 
-            "ardef_header_date", "line_no", "lines"
+            "file_id", "file_processing_date", "ardef_version", 
+            "ardef_header_date", "line_no", "lines", "row_creation_timestamp", "_eff_ts",
         ]
         return pd.DataFrame([], columns=meta_cols + list(schema.keys()), dtype=str)
     
@@ -61,7 +61,7 @@ def _build_ardef_transform_dataframe(
     # ' lines' se mantiene como llave natural de deduplicación
     meta = raw[[
         "file_id", "file_processing_date", "ardef_version", 
-        "ardef_header_date", "line_no", "lines",
+        "ardef_header_date", "line_no", "lines", "row_creation_timestamp", "_eff_ts",
     ]].reset_index(drop=True)
     parsed_df = parsed_df.reset_index(drop=True)
 

@@ -2,7 +2,7 @@ import gc
 import json 
 import logging
 
-from ardef import vi_interpreter, vi_transform, vi_clean, vi_calculate, vi_operational
+from ardef import calculate, clean, interpreter, operational, transform
 from ardef.persistence.file import FileStorage
 
 # Logger estándar 
@@ -18,35 +18,35 @@ def _pipeline_ardef(file_id: str, file_processing_date: str) -> None:
     """
     Orquesta las 5 etapas del pipeline ARDEF en orden.
     """
-    vi_interpreter.interpretate_ardef(
+    interpreter.interpretate_ardef(
         origin_layer=layer.LANDING,
         target_layer=layer.STAGING,
         file_id=file_id,
         file_processing_date=file_processing_date
     )
     
-    vi_transform.transform_ardef(
+    transform.transform_ardef(
         origin_layer=layer.STAGING,
         target_layer=layer.STAGING,
         file_id=file_id,
         file_processing_date=file_processing_date,
     )
 
-    vi_clean.clean_ardef(
+    clean.clean_ardef(
         origin_layer=layer.STAGING,
         target_layer=layer.STAGING,
         file_id=file_id,
         file_processing_date=file_processing_date,
     )
 
-    vi_calculate.calculate_ardef(
+    calculate.calculate_ardef(
         origin_layer=layer.STAGING,
         target_layer=layer.STAGING,
         file_id=file_id,
         file_processing_date=file_processing_date,
     )
 
-    vi_operational.load_operational_ardef(
+    operational.load_operational_ardef(
         origin_layer=layer.STAGING,
         target_layer=layer.OPERATIONAL,
         file_id=file_id,

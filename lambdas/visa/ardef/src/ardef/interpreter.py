@@ -40,6 +40,12 @@ def _build_ardef_raw_dataframe(
     Convierte el archivo ARDEF leido como texto en un dataframe.
     """
 
+    # Timestamp de creación del parquet (mismo instante para row_creation_timestamp y _eff_ts)
+    _now = datetime.now()
+    row_creation_timestamp = _now.strftime("%Y-%m-%d %H:%M:%S.") + \
+        f"{_now.microsecond // 1000:03d}"
+    eff_ts = row_creation_timestamp   # getdate() — momento exacto de ejecución de la fila
+
     if records.empty:
         log.logger.warning(
             f"No records found for file_id={file_id}, "
@@ -51,10 +57,12 @@ def _build_ardef_raw_dataframe(
             columns=[
                 "file_id",
                 "file_processing_date",
-                "ardef_version"
+                "ardef_version",
                 "ardef_header_date",
                 "line_no",
                 "lines",
+                "row_creation_timestamp",
+                "_eff_ts",
             ],
             dtype=str,
         )
@@ -117,8 +125,10 @@ def _build_ardef_raw_dataframe(
             "file_processing_date": file_processing_date,
             "ardef_version": ultimate_version,
             "ardef_header_date": ultimate_date,
-            "line_no": range(1, len(lines) +1),
+            "line_no": range(1, len(lines) + 1),
             "lines": lines,
+            "row_creation_timestamp": row_creation_timestamp,
+            "_eff_ts": eff_ts,
         }
     )
 

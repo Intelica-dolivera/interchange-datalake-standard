@@ -1,10 +1,12 @@
 METADATA_SCHEMA: dict[str, dict[str, str]] = {
-    "file_id":                  {"data_type":"text"},
-    "file_processing_date":     {"data_type":"date"},
-    "ardef_version":            {"data_type":"text"},
-    "ardef_header_date":        {"data_type":"text"},
-    "line_no":                  {"data_type":"integer"},
-    "lines":                    {"data_type": "text"},
+    "file_id":                  {"data_type":'text'},
+    "file_processing_date":     {"data_type":'text'},
+    "ardef_version":            {"data_type":'text'},
+    "ardef_header_date":        {"data_type":'text'},
+    "line_no":                  {"data_type":'integer'},
+    "lines":                    {"data_type":'text'},
+    "row_creation_timestamp":   {"data_type":'text'},
+    "_eff_ts":                  {"data_type":'text'},
 }
 
 # Cada campo contiene:
@@ -17,10 +19,10 @@ ARDEF_SCHEMA: dict[str, dict[str, int]] = {
     "table_type":                                           {"start": 0,    "end": 2,       "data_type": 'text' },
     "table_mnemonic":                                       {"start": 2,    "end": 10,      "data_type": 'text' },
     "record_type":                                          {"start": 10,   "end": 11,      "data_type": 'text' },
-    "table_key":                                            {"start": 11,   "end": 23,      "data_type": 'text' },
+    "table_key":                                            {"start": 11,   "end": 23,      "data_type": 'integer' }, # data_type
     "effective_date":                                       {"start": 23,   "end": 31,      "data_type": 'text' },
     "delete_indicator":                                     {"start": 31,   "end": 32,      "data_type": 'text' },
-    "low_key_for_range":                                    {"start": 32,   "end": 44,      "data_type": 'text' },
+    "low_key_for_range":                                    {"start": 32,   "end": 44,      "data_type": 'integer' }, # data_type
     "issuer_identifier":                                    {"start": 44,   "end": 50,      "data_type": 'text' },
     "check_digit_algorithm":                                {"start": 50,   "end": 51,      "data_type": 'text' },
     "account_number_length":                                {"start": 51,   "end": 53,      "data_type": 'text' },
