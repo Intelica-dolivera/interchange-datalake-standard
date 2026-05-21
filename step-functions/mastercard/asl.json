@@ -1,0 +1,9 @@
+{
+    "Comment": "MC Pipeline placeholder",
+    "StartAt": "Placeholder",
+    "States": {
+      "Placeholder": {
+        "Type": "Succeed"
+      }
+    }
+  }

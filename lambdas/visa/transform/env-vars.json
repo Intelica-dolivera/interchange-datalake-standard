@@ -2,7 +2,7 @@
   "Variables": {
     "CHUNK_SIZE_MB": "128",
     "FLUSH_BATCH_SIZE": "1000000",
-    "S3_BUCKET_LANDING": "itl-0004-itx-dev-poc-02-landing",
-    "S3_BUCKET_STAGING": "itl-0004-itx-dev-poc-02-staging"
+    "S3_BUCKET_LANDING": "itl-0004-itx-dev-intchg-02-s3-landing",
+    "S3_BUCKET_STAGING": "itl-0004-itx-dev-intchg-02-s3-staging"
   }
 }

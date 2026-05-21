@@ -1,15 +1,15 @@
 {
-    "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-vi-clean",
-    "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-vi-clean",
+    "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-unzip",
+    "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-unzip",
     "Runtime": "python3.11",
     "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-vi-role",
     "Handler": "handler.lambda_handler",
-    "CodeSize": 3692,
-    "Description": "Limpieza y validacion",
-    "Timeout": 900,
-    "MemorySize": 10240,
-    "LastModified": "2026-05-18T21:27:32.000+0000",
-    "CodeSha256": "3+/BgaCeVk/T4yguBkmn8B/bxf8jhgp3/bj2s1/Cghs=",
+    "CodeSize": 4768,
+    "Description": "",
+    "Timeout": 240,
+    "MemorySize": 1024,
+    "LastModified": "2026-05-20T03:12:07.000+0000",
+    "CodeSha256": "Ml8IJwl6UsJsL97N3zc7TVIlZ40Dv3wZvYrI/gbigq8=",
     "Version": "$LATEST",
     "VpcConfig": {
         "SubnetIds": [
@@ -24,20 +24,19 @@
     },
     "Environment": {
         "Variables": {
-            "DYNAMODB_FIELD_DEFINITION": "itl-0004-itx-dev-dynamo-visa_fields-02",
-            "CLEAN_CHUNK_SIZE": "300000",
-            "S3_BUCKET_STAGING": "itl-0004-itx-dev-intchg-02-s3-staging",
-            "S3_BUCKET_LANDING": "itl-0004-itx-dev-intchg-02-s3-landing"
+            "EXTRACT_CHUNK_SIZE_MB": "64",
+            "S3_BUCKET_OPERATIONAL": "itl-0004-itx-dev-intchg-02-s3-operational",
+            "S3_BUCKET_LANDING": "itl-0004-itx-dev-intchg-02-s3-landing",
+            "DYNAMODB_TABLE_FILE_PATTERN": "itl-0004-itx-dev-dynamo-file_pattern-02"
         }
     },
-    "KMSKeyArn": "arn:aws:kms:eu-south-2:861276092327:key/560dd37d-d216-49bb-90ff-8d21f03db55f",
     "TracingConfig": {
         "Mode": "PassThrough"
     },
-    "RevisionId": "a9b810c3-dd99-4fb6-ba5d-0a6b4b20eff9",
+    "RevisionId": "1ad2f45d-918f-4788-a17f-d2d9b6ca5285",
     "Layers": [
         {
-            "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:2",
+            "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:1",
             "CodeSize": 64425635
         }
     ],
@@ -59,6 +58,6 @@
     },
     "LoggingConfig": {
         "LogFormat": "Text",
-        "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-vi-clean"
+        "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-unzip"
     }
 }

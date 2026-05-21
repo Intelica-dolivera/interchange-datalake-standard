@@ -1,28 +1,46 @@
 {
-    "FunctionName": "itx-router",
-    "FunctionArn": "arn:aws:lambda:us-east-1:293472517631:function:itx-router",
+    "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-router",
+    "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-router",
     "Runtime": "python3.11",
-    "Role": "arn:aws:iam::293472517631:role/itx-lambda-router-role",
+    "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-vi-role",
     "Handler": "handler.lambda_handler",
-    "CodeSize": 6413,
-    "Description": "",
-    "Timeout": 300,
-    "MemorySize": 512,
-    "LastModified": "2026-04-07T19:59:12.000+0000",
-    "CodeSha256": "upfXK2xnMtIONhetmlcNHDMDgGC/dpyPuNcVOQjnNiQ=",
+    "CodeSize": 8818,
+    "Description": "Router de clasificacion de archivos",
+    "Timeout": 240,
+    "MemorySize": 8192,
+    "LastModified": "2026-05-20T21:09:40.000+0000",
+    "CodeSha256": "/f9w7AR5fBLfKzZ3v/05hcTY3/EflhJCCUjQYegfJCg=",
     "Version": "$LATEST",
+    "VpcConfig": {
+        "SubnetIds": [
+            "subnet-03cb8477fb39f639e",
+            "subnet-0b02ad525f046501b"
+        ],
+        "SecurityGroupIds": [
+            "sg-0671b8f0fb5aa27ca"
+        ],
+        "VpcId": "vpc-0101d2c447b67e9db",
+        "Ipv6AllowedForDualStack": false
+    },
     "Environment": {
         "Variables": {
-            "STEP_FUNCTION_ARN": "arn:aws:states:us-east-1:293472517631:stateMachine:itx-main-orchestrator",
-            "DYNAMODB_TABLE_FILE_CONTROL": "itx-file-control",
-            "S3_BUCKET_LANDING": "itx-landing-dev",
-            "DYNAMODB_TABLE_FILE_PATTERN": "itx-file-pattern"
+            "UNZIP_FUNCTION_NAME": "itl-0004-itx-dev-intchg-02-lmbd-unzip",
+            "VISA_ARDEF_FUNCTION_NAME": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-vi-ardef",
+            "STEP_FUNCTION_ARN": "arn:aws:states:eu-south-2:861276092327:stateMachine:itl-0004-itx-dev-intchg-02-sfn-vi",
+            "STEP_FUNCTION_MC_ARN": "arn:aws:states:eu-south-2:861276092327:stateMachine:itl-0004-itx-dev-intchg-02-sfn-mc",
+            "S3_BUCKET_STAGING": "itl-0004-itx-dev-intchg-02-s3-staging",
+            "STEP_FUNCTION_VI_ARN": "arn:aws:states:eu-south-2:861276092327:stateMachine:itl-0004-itx-dev-intchg-02-sfn-vi",
+            "MASTERCARD_IAR_FUNCTION_NAME": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-iar",
+            "DYNAMODB_TABLE_FILE_CONTROL": "itl-0004-itx-dev-dynamo-file_control-02",
+            "S3_BUCKET_LANDING": "itl-0004-itx-dev-intchg-02-s3-landing",
+            "DYNAMODB_TABLE_FILE_PATTERN": "itl-0004-itx-dev-dynamo-file_pattern-02"
         }
     },
+    "KMSKeyArn": "arn:aws:kms:eu-south-2:861276092327:key/560dd37d-d216-49bb-90ff-8d21f03db55f",
     "TracingConfig": {
         "Mode": "PassThrough"
     },
-    "RevisionId": "0c275f76-6d9f-4761-ad4e-50c668535989",
+    "RevisionId": "b8ac73f1-7044-449d-8e1c-d9ffd9d25e66",
     "State": "Active",
     "LastUpdateStatus": "Successful",
     "PackageType": "Zip",
@@ -37,10 +55,10 @@
         "OptimizationStatus": "Off"
     },
     "RuntimeVersionConfig": {
-        "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:2dd1508137b11c824261f6af3f20ff8cb0ab84db8fe5f0e6a7301b8909985890"
+        "RuntimeVersionArn": "arn:aws:lambda:eu-south-2::runtime:a0dd170e909c9230a7e18f978320f0053271b75d0b703c836ab4f98f2e3f6a5a"
     },
     "LoggingConfig": {
         "LogFormat": "Text",
-        "LogGroup": "/aws/lambda/itx-router"
+        "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-router"
     }
 }

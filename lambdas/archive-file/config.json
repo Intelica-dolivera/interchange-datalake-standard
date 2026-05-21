@@ -1,26 +1,39 @@
 {
-    "FunctionName": "itx-archive-file",
-    "FunctionArn": "arn:aws:lambda:us-east-1:293472517631:function:itx-archive-file",
+    "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-archive-file",
+    "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-archive-file",
     "Runtime": "python3.11",
-    "Role": "arn:aws:iam::293472517631:role/itx-lambda-router-role",
+    "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-vi-role",
     "Handler": "handler.lambda_handler",
-    "CodeSize": 1398,
-    "Description": "",
-    "Timeout": 300,
-    "MemorySize": 2048,
-    "LastModified": "2026-03-09T15:54:17.011+0000",
-    "CodeSha256": "B2IMVQCdkXG4SG/zbJ5NCVRHH9tXUtyUOnkvIsRpHPM=",
+    "CodeSize": 3860,
+    "Description": "Archivado de archivo original",
+    "Timeout": 240,
+    "MemorySize": 8192,
+    "LastModified": "2026-05-19T16:51:11.000+0000",
+    "CodeSha256": "jZIzFAZFDpPAsK6tTZ3IMhap/hCq/Ub0xTjj69EEDw8=",
     "Version": "$LATEST",
+    "VpcConfig": {
+        "SubnetIds": [
+            "subnet-03cb8477fb39f639e",
+            "subnet-0b02ad525f046501b"
+        ],
+        "SecurityGroupIds": [
+            "sg-0671b8f0fb5aa27ca"
+        ],
+        "VpcId": "vpc-0101d2c447b67e9db",
+        "Ipv6AllowedForDualStack": false
+    },
     "Environment": {
         "Variables": {
-            "S3_BUCKET_LANDING": "itx-landing-dev",
-            "S3_BUCKET_ARCHIVE": "itx-archive-dev"
+            "S3_BUCKET_STAGING": "itl-0004-itx-dev-intchg-02-s3-staging",
+            "S3_BUCKET_LANDING": "itl-0004-itx-dev-intchg-02-s3-landing",
+            "S3_BUCKET_ARCHIVE": "itl-0004-itx-dev-intchg-02-s3-archive"
         }
     },
+    "KMSKeyArn": "arn:aws:kms:eu-south-2:861276092327:key/560dd37d-d216-49bb-90ff-8d21f03db55f",
     "TracingConfig": {
         "Mode": "PassThrough"
     },
-    "RevisionId": "7c8e1a4a-1cb1-4ff5-92ee-2cf104a22b0e",
+    "RevisionId": "4e10e405-fa2a-40e9-bd2f-b255a4803e55",
     "State": "Active",
     "LastUpdateStatus": "Successful",
     "PackageType": "Zip",
@@ -35,10 +48,10 @@
         "OptimizationStatus": "Off"
     },
     "RuntimeVersionConfig": {
-        "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:0de7d4de4aef04631dc8443fb686ab8bf14de4d4a348cb0d407cce5f48aef7d8"
+        "RuntimeVersionArn": "arn:aws:lambda:eu-south-2::runtime:a0dd170e909c9230a7e18f978320f0053271b75d0b703c836ab4f98f2e3f6a5a"
     },
     "LoggingConfig": {
         "LogFormat": "Text",
-        "LogGroup": "/aws/lambda/itx-archive-file"
+        "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-archive-file"
     }
 }

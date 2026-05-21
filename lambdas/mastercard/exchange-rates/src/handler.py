@@ -23,9 +23,9 @@ logger.setLevel(logging.INFO)
 # CONFIGURATION
 # =============================================================================
 
-S3_BUCKET     = os.environ.get("S3_BUCKET",     "itl-0004-itx-dev-poc-02-reference")
+S3_BUCKET     = os.environ.get("S3_BUCKET",     "itl-0004-itx-dev-intchg-02-s3-reference")
 S3_PREFIX     = os.environ.get("S3_PREFIX",     "exchange-rates/brand=Mastercard")
-FUNCTION_NAME = os.environ.get("FUNCTION_NAME", "itl-0004-itx-dev-mastercard-exchange-rates")
+FUNCTION_NAME = os.environ.get("FUNCTION_NAME", "itl-0004-itx-dev-intchg-02-lmbd-mc-exchange-rates")
 BEGIN_DATE    = os.environ.get("BEGIN_DATE",     datetime.now().strftime("%Y-%m-%d"))
 END_DATE      = os.environ.get("END_DATE",       datetime.now().strftime("%Y-%m-%d"))
 

@@ -52,7 +52,7 @@ TABLE_FILE_CONTROL  = os.environ.get('DYNAMODB_TABLE_FILE_CONTROL', 'itx-file-co
 TABLE_FILE_PATTERN  = os.environ.get('DYNAMODB_TABLE_FILE_PATTERN', 'itx-file-pattern')
 UNZIP_FUNCTION_NAME = os.environ.get('UNZIP_FUNCTION_NAME', 'itx-unzip')
 STEP_FUNCTION_VI_ARN   = os.environ.get('STEP_FUNCTION_VI_ARN')
-# STEP_FUNCTION_MASTERCARD_ARN   = os.environ.get('STEP_FUNCTION_MASTERCARD_ARN')
+STEP_FUNCTION_MC_ARN   = os.environ.get('STEP_FUNCTION_MC_ARN')
 VISA_ARDEF_FUNCTION_NAME   = os.environ.get('VISA_ARDEF_FUNCTION_NAME')
 MASTERCARD_IAR_FUNCTION_NAME   = os.environ.get('MASTERCARD_IAR_FUNCTION_NAME')
 
@@ -77,7 +77,7 @@ def validar_configuracion():
     
     required_env_vars = {
         'STEP_FUNCTION_VI_ARN': STEP_FUNCTION_VI_ARN,
-        # 'STEP_FUNCTION_MASTERCARD_ARN' : STEP_FUNCTION_MASTERCARD_ARN,
+        'STEP_FUNCTION_MC_ARN' : STEP_FUNCTION_MC_ARN,
         'VISA_ARDEF_FUNCTION_NAME': VISA_ARDEF_FUNCTION_NAME,
         'MASTERCARD_IAR_FUNCTION_NAME': MASTERCARD_IAR_FUNCTION_NAME,
         'UNZIP_FUNCTION_NAME': UNZIP_FUNCTION_NAME,
@@ -691,12 +691,12 @@ def start_process(
             input=json.dumps(variables_input)
         )
         process_reference = response['executionArn']
-    # elif brand == 'MASTERCARD':
-    #     response = sfn.start_execution(
-    #     stateMachineArn=STEP_FUNCTION_MASTERCARD_ARN,
-    #     name=execution_name,
-    #     input=json.dumps(variables_input)
-    #     )
+    elif brand == 'MASTERCARD':
+        response = sfn.start_execution(
+        stateMachineArn=STEP_FUNCTION_MC_ARN,
+        name=execution_name,
+        input=json.dumps(variables_input)
+        )
     else:
         raise ValueError(
             f"No existe proceso configurado para "

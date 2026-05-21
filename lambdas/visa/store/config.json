@@ -1,20 +1,46 @@
 {
-    "FunctionName": "itx-store",
-    "FunctionArn": "arn:aws:lambda:us-east-1:293472517631:function:itx-store",
+    "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-vi-store",
+    "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-vi-store",
     "Runtime": "python3.11",
-    "Role": "arn:aws:iam::293472517631:role/itx-lambda-router-role",
-    "Handler": "placeholder_generic.lambda_handler",
-    "CodeSize": 426,
-    "Description": "",
-    "Timeout": 3,
-    "MemorySize": 128,
-    "LastModified": "2026-03-09T22:21:48.390+0000",
-    "CodeSha256": "DSfKOXJSE6n/jtF869vLJx4avJTtTrKlftpPE5AK4uw=",
+    "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-vi-role",
+    "Handler": "handler.lambda_handler",
+    "CodeSize": 5082,
+    "Description": "Persistencia de resultados operacionales",
+    "Timeout": 900,
+    "MemorySize": 10240,
+    "LastModified": "2026-05-19T22:02:24.000+0000",
+    "CodeSha256": "po99tC+ZZ8QqHLpEXeTndAnjYUU+d7isu93pIv20ghw=",
     "Version": "$LATEST",
+    "VpcConfig": {
+        "SubnetIds": [
+            "subnet-03cb8477fb39f639e",
+            "subnet-0b02ad525f046501b"
+        ],
+        "SecurityGroupIds": [
+            "sg-0671b8f0fb5aa27ca"
+        ],
+        "VpcId": "vpc-0101d2c447b67e9db",
+        "Ipv6AllowedForDualStack": false
+    },
+    "Environment": {
+        "Variables": {
+            "S3_BUCKET_OPERATIONAL": "itl-0004-itx-dev-intchg-02-s3-operational",
+            "S3_BUCKET_STAGING": "itl-0004-itx-dev-intchg-02-s3-staging",
+            "DYNAMODB_TABLE_FILE_CONTROL": "itl-0004-itx-dev-dynamo-file_control-02",
+            "S3_BUCKET_LANDING": "itl-0004-itx-dev-intchg-02-s3-landing"
+        }
+    },
+    "KMSKeyArn": "arn:aws:kms:eu-south-2:861276092327:key/560dd37d-d216-49bb-90ff-8d21f03db55f",
     "TracingConfig": {
         "Mode": "PassThrough"
     },
-    "RevisionId": "d42f3186-b35b-45f2-9ff9-0c7868ee16ee",
+    "RevisionId": "27d8035b-5282-430e-bbd4-88cf75f11099",
+    "Layers": [
+        {
+            "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:2",
+            "CodeSize": 64425635
+        }
+    ],
     "State": "Active",
     "LastUpdateStatus": "Successful",
     "PackageType": "Zip",
@@ -29,10 +55,10 @@
         "OptimizationStatus": "Off"
     },
     "RuntimeVersionConfig": {
-        "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:0de7d4de4aef04631dc8443fb686ab8bf14de4d4a348cb0d407cce5f48aef7d8"
+        "RuntimeVersionArn": "arn:aws:lambda:eu-south-2::runtime:a0dd170e909c9230a7e18f978320f0053271b75d0b703c836ab4f98f2e3f6a5a"
     },
     "LoggingConfig": {
         "LogFormat": "Text",
-        "LogGroup": "/aws/lambda/itx-store"
+        "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-vi-store"
     }
 }

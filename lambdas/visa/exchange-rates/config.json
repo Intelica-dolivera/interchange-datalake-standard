@@ -1,0 +1,44 @@
+{
+    "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-vi-exchange-rates",
+    "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-vi-exchange-rates",
+    "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-vi-exchange-rates-role",
+    "CodeSize": 0,
+    "Description": "",
+    "Timeout": 900,
+    "MemorySize": 2048,
+    "LastModified": "2026-05-20T15:01:40.000+0000",
+    "CodeSha256": "67bcb4b7edddee50c338333613b0d7be7016f62d3e5e1b1350ffec9a5a68c363",
+    "Version": "$LATEST",
+    "VpcConfig": {
+        "SubnetIds": [
+            "subnet-03cb8477fb39f639e",
+            "subnet-0b02ad525f046501b"
+        ],
+        "SecurityGroupIds": [
+            "sg-0ea832a8a272949c3"
+        ],
+        "VpcId": "vpc-0101d2c447b67e9db",
+        "Ipv6AllowedForDualStack": false
+    },
+    "TracingConfig": {
+        "Mode": "PassThrough"
+    },
+    "RevisionId": "464d9b05-0850-4938-9c2a-20049a658bc1",
+    "State": "Active",
+    "LastUpdateStatus": "Successful",
+    "PackageType": "Image",
+    "Architectures": [
+        "x86_64"
+    ],
+    "EphemeralStorage": {
+        "Size": 512
+    },
+    "SnapStart": {
+        "ApplyOn": "None",
+        "OptimizationStatus": "Off"
+    },
+    "LoggingConfig": {
+        "LogFormat": "Text",
+        "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-vi-exchange-rates"
+    }
+}
