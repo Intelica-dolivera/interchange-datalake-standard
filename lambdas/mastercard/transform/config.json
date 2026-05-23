@@ -1,0 +1,54 @@
+{
+  "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-transform",
+  "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-transform",
+  "Runtime": "python3.11",
+  "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-mc-role",
+  "Handler": "handler.lambda_handler",
+  "CodeSize": 12182,
+  "Description": "",
+  "Timeout": 400,
+  "MemorySize": 10000,
+  "LastModified": "2026-05-21T22:10:19.000+0000",
+  "CodeSha256": "6bERngrN0C/uqwjRS/JMmU8iy5cZGx3DTPiXtV8pDHE=",
+  "Version": "$LATEST",
+  "Environment": {
+    "Variables": {
+      "S3_REFERENCE_BUCKET": "itl-0004-itx-dev-intchg-02-s3-reference",
+      "S3_STAGING_BUCKET": "itl-0004-itx-dev-intchg-02-s3-staging",
+      "ITX_RUNTIME": "aws",
+      "S3_OPERATIONAL_BUCKET": "itl-0004-itx-dev-intchg-02-s3-operational",
+      "ENVIRONMENT": "dev",
+      "S3_LANDING_BUCKET": "itl-0004-itx-dev-intchg-02-s3-landing",
+      "DDB_FILE_CONTROL_TABLE": "itl-0004-itx-dev-dynamo-file_control-02",
+      "DDB_CLIENT_TABLE": "itl-0004-itx-dev-dynamo-client-02"
+    }
+  },
+  "TracingConfig": {
+    "Mode": "PassThrough"
+  },
+  "RevisionId": "62f9dacb-0b95-4167-acf9-11e3914366e4",
+  "Layers": [
+    {
+      "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:2",
+      "CodeSize": 64425635
+    }
+  ],
+  "State": "Active",
+  "LastUpdateStatus": "Successful",
+  "PackageType": "Zip",
+  "Architectures": ["x86_64"],
+  "EphemeralStorage": {
+    "Size": 512
+  },
+  "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+  },
+  "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:eu-south-2::runtime:a0dd170e909c9230a7e18f978320f0053271b75d0b703c836ab4f98f2e3f6a5a"
+  },
+  "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-mc-transform"
+  }
+}
