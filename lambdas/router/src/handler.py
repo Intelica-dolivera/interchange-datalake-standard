@@ -441,6 +441,417 @@ def extraer_fecha_ardef(bucket: str, key:str) -> str: # POR TESTEAR
     except ValueError:
         logger.warning(f" Fecha ARDEF inválida: '{ultimate_date}' | usando fecha actual")
         return fecha_default
+    
+# =============================================================================
+# DETECCIÓN DE FECHA — ARCHIVOS MASTERCARD IPM (len-prefixed)
+# =============================================================================    
+
+# DE spec inline: idéntico a Parameters().getdataelements() de mc_interpreter_handler.
+# Solo necesitamos hasta DE48 (DE24 = function_code, DE48 = PDS blob con file_idn).
+_MC_DE_SPEC: Dict[int, Dict] = {
+    1:   {"fixed": True,  "length": 8},     
+    2:   {"fixed": False, "length": 2},     
+    3:   {"fixed": True,  "length": 6}, 
+    4:   {"fixed": True,  "length": 12},    
+    5:   {"fixed": True,  "length": 12},    
+    6:   {"fixed": True,  "length": 12},
+    9:   {"fixed": True,  "length": 8},     
+    10:  {"fixed": True,  "length": 8},     
+    12:  {"fixed": True,  "length": 12},
+    14:  {"fixed": True,  "length": 4},     
+    22:  {"fixed": True,  "length": 12},    
+    23:  {"fixed": True,  "length": 3},
+    24:  {"fixed": True,  "length": 3},   # function_code (3 bytes: "695", "697", …)
+    25:  {"fixed": True,  "length": 4},     
+    26:  {"fixed": True,  "length": 4},     
+    30:  {"fixed": True,  "length": 24},
+    31:  {"fixed": False, "length": 2},     
+    32:  {"fixed": False, "length": 2},     
+    33:  {"fixed": False, "length": 2},
+    37:  {"fixed": True,  "length": 12},    
+    38:  {"fixed": True,  "length": 6},     
+    40:  {"fixed": True,  "length": 3},
+    41:  {"fixed": True,  "length": 8},     
+    42:  {"fixed": True,  "length": 15},    
+    43:  {"fixed": False, "length": 2},
+    48:  {"fixed": False, "length": 3},   # PDS blob (variable, prefijo 3 dígitos)
+}
+
+
+def _mc_to_bool(val) -> bool:
+    """Convierte un valor DynamoDB (bool/int/str) a bool."""
+    if val is None:
+        return False
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ('true', '1', 'y', 'yes', 't')
+ 
+ 
+def _mc_decode_digits(raw: bytes, is_ebcdic: bool) -> str:
+    """
+    Decodifica bytes de dígitos a string.
+    ASCII  : bytes 0x30-0x39 → '0'-'9'
+    EBCDIC : bytes 0xF0-0xF9 → '0'-'9'
+    """
+    if is_ebcdic:
+        return ''.join(
+            chr(ord('0') + (b - 0xF0)) if 0xF0 <= b <= 0xF9 else '?'
+            for b in raw
+        )
+    return raw.decode('latin-1', errors='replace')
+
+
+def _mc_unblock_chunk(data: bytes, payload_size: int = 1012, sep_size: int = 2) -> bytes:
+    """
+    Desbloquea un chunk en formato 1014 bytes/bloque:
+        [1012 bytes payload][2 bytes separador] …
+    Replica unblock_1014() de mc_interpreter_handler sobre bytes ya cargados.
+    """
+    out = bytearray()
+    pos = 0
+    while pos < len(data):
+        out.extend(data[pos : pos + payload_size])
+        pos += payload_size + sep_size
+    return bytes(out)
+ 
+ 
+def _mc_parse_bitmap_fields(bitmap: bytes) -> List[int]:
+    """
+    Devuelve la lista de DEs presentes según el bitmap.
+    Bit más significativo (MSB) primero → campo 1, 2, … 128.
+    """
+    fields: List[int] = []
+    for i, byte in enumerate(bitmap):
+        for bit in range(8):
+            if byte & (1 << (7 - bit)):
+                fields.append(i * 8 + bit + 1)
+    return fields
+
+
+def _mc_decode_de48(raw: bytes, is_ebcdic: bool) -> Optional[str]:
+    """
+    Decodifica los bytes crudos de DE48 a string para parseo de PDS tags.
+    ASCII  → latin-1
+    EBCDIC → cp500
+    """
+    try:
+        return raw.decode('cp500' if is_ebcdic else 'latin-1', errors='replace')
+    except Exception:
+        return None
+    
+
+def _mc_extract_pds(pds_blob: str, target_tag: str) -> Optional[str]:
+    """
+    Extrae el valor de un tag PDS del blob DE48.
+    Replica extract_pds_value_48_105() de mc_interpreter_handler.
+ 
+    Estructura PDS: [4 chars tag][3 chars longitud][datos …]
+    """
+    if not pds_blob:
+        return None
+    s = pds_blob
+    i = 0
+    n = len(s)
+    while i + 7 <= n:
+        tag = s[i:i + 4]
+        try:
+            ln = int(s[i + 4:i + 7])
+        except ValueError:
+            return None
+        start = i + 7
+        end   = start + ln
+        if end > n:
+            return None
+        val = s[start:end]
+        if tag == target_tag:
+            return val
+        i = end
+    return None
+
+
+def _mc_try_parse_1644_695(payload: bytes, is_ebcdic: bool) -> Optional[str]:
+    """
+    Para un payload de MTI 1644, intenta extraer file_dt si el mensaje es el
+    trailer (function_code == "695").
+ 
+    Replica la lógica de add_headers_fields_697() en mc_interpreter_handler:
+      1. Separar bitmap + body (mismo que split_mti_bitmap_body)
+      2. Parsear DEs del body hasta DE48 siguiendo _MC_DE_SPEC
+      3. DE24 → function_code → confirmar que sea "695"
+      4. DE48 → decodificar → PDS tag "0105" → file_idn
+      5. Retornar file_idn[3:9]  (= file_dt, formato YYMMDD)
+    """
+    # Separar bitmap y body (MTI ya conocido = 4 bytes del inicio)
+    if len(payload) < 12:
+        return None
+ 
+    primary = payload[4:12]
+    has_sec = bool(primary[0] & 0x80)
+ 
+    if has_sec:
+        if len(payload) < 20:
+            return None
+        bitmap = payload[4:20]
+        body   = payload[20:]
+    else:
+        bitmap = payload[4:12]
+        body   = payload[12:]
+ 
+    fields = _mc_parse_bitmap_fields(bitmap)
+ 
+    # Recorrer DEs hasta DE48 para extraer DE24 (function_code) y DE48 (PDS blob)
+    de24_val: Optional[str]   = None
+    de48_raw: Optional[bytes] = None
+    pos = 0
+ 
+    for de in sorted(f for f in fields if 2 <= f <= 48):
+        cfg = _MC_DE_SPEC.get(de)
+        if cfg is None:
+            break  # campo fuera del spec conocido → detener
+ 
+        if cfg["fixed"]:
+            ln = cfg["length"]
+            if pos + ln > len(body):
+                break
+            raw = body[pos : pos + ln]
+            pos += ln
+        else:
+            ld = cfg["length"]
+            if pos + ld > len(body):
+                break
+            raw_len_bytes = body[pos : pos + ld]
+            pos += ld
+            try:
+                ln = int(_mc_decode_digits(raw_len_bytes, is_ebcdic).strip())
+            except ValueError:
+                break
+            if pos + ln > len(body):
+                break
+            raw = body[pos : pos + ln]
+            pos += ln
+ 
+        if de == 24:
+            de24_val = _mc_decode_digits(raw, is_ebcdic).strip()
+        elif de == 48:
+            de48_raw = raw
+            break  # ya tenemos todo lo necesario
+ 
+    # Confirmar que es el trailer (function_code = "695")
+    if de24_val != "695":
+        return None
+    if de48_raw is None:
+        return None
+ 
+    # Decodificar DE48 → PDS "0105" → file_idn → file_idn[3:9]
+    de48_str = _mc_decode_de48(de48_raw, is_ebcdic)
+    if de48_str is None:
+        return None
+ 
+    file_idn = _mc_extract_pds(de48_str, "0105")
+    if not file_idn or len(file_idn) < 9:
+        return None
+ 
+    return file_idn[3:9]   # file_dt = file_idn[3:9]  (YYMMDD)
+
+
+def _mc_scan_for_695(data: bytes) -> Optional[str]:
+    """
+    Escanea un buffer de bytes buscando el PRIMER mensaje MTI 1644 con
+    function_code 695 (trailer de archivo).
+ 
+    Se detiene en cuanto encuentra el primer trailer válido: todos los trailers
+    de un mismo archivo comparten el mismo file_dt, por lo que no tiene sentido
+    seguir escaneando si ya se encontró uno.
+ 
+    Estrategia de alineación:
+      El buffer puede comenzar a mitad de un mensaje (leemos desde el final del
+      archivo), por lo que buscamos linealmente posiciones donde:
+        - Los 4 bytes formen un msg_len plausible (10 … 65535)
+        - Los 4 bytes siguientes sean dígitos ASCII o EBCDIC (MTI válido)
+      Una vez en un límite válido, avanzamos de mensaje en mensaje con el
+      prefijo de longitud.
+ 
+    Retorna el file_dt (YYMMDD) del PRIMER 695 encontrado, o None.
+    """
+    n   = len(data)
+    pos = 0
+ 
+    while pos + 8 < n:
+        # Intentar leer prefijo de longitud
+        try:
+            msg_len = struct.unpack(">i", data[pos : pos + 4])[0]
+        except Exception:
+            pos += 1
+            continue
+ 
+        # Filtro 1: longitud plausible para un mensaje IPM (10 bytes … 64 KB)
+        if not (10 <= msg_len <= 65535):
+            pos += 1
+            continue
+ 
+        end_pos = pos + 4 + msg_len
+        if end_pos > n:
+            pos += 1
+            continue
+ 
+        payload   = data[pos + 4 : end_pos]
+        mti_bytes = payload[:4]
+ 
+        # Filtro 2: los 4 bytes del MTI deben ser dígitos ASCII o EBCDIC
+        is_ascii  = all(0x30 <= b <= 0x39 for b in mti_bytes)
+        is_ebcdic = all(0xF0 <= b <= 0xF9 for b in mti_bytes)
+ 
+        if not (is_ascii or is_ebcdic):
+            pos += 1
+            continue
+ 
+        mti_str = (
+            ''.join(str(b - 0xF0) for b in mti_bytes)
+            if is_ebcdic else
+            mti_bytes.decode('latin-1')
+        )
+ 
+        if mti_str == "1644":
+            file_dt = _mc_try_parse_1644_695(payload, is_ebcdic)
+            if file_dt is not None:
+                # Primer trailer encontrado → retornar inmediatamente.
+                # Todos los trailers del archivo comparten el mismo file_dt,
+                # no tiene sentido seguir escaneando.
+                logger.info(f"  MC: primer 695 encontrado | file_dt={file_dt!r} | pos={pos}")
+                return file_dt
+ 
+        # Avanzar al siguiente mensaje
+        pos = end_pos
+ 
+    return None
+
+
+def extraer_fecha_mc(
+    bucket: str,
+    key: str,
+    file_block: bool = False,
+    interpreter_fix: bool = True,
+) -> str:
+    """
+    Extrae file_dt del PRIMER trailer 1644/695 de un archivo Mastercard IPM.
+ 
+    Replica la lógica de add_headers_fields_697() en mc_interpreter_handler:
+      DE48 del mensaje 695 → PDS tag "0105" → file_idn → file_idn[3:9] → YYMMDD
+ 
+    Estrategia de lectura (desde el principio, chunk a chunk):
+      Lee el archivo en chunks de 512 KB desde el byte 0, parando en cuanto
+      encuentra el primer trailer 695. No descarga el archivo completo.
+ 
+      Para archivos bloqueados (file_block=True):
+        El chunk_size se alinea a múltiplos de 1014 bytes para que
+        _mc_unblock_chunk procese bloques completos sin corrupción.
+ 
+      Overlap entre chunks:
+        Se conservan los últimos 8 KB del chunk anterior y se prependen al
+        siguiente. Esto garantiza que un mensaje que quede partido justo en
+        el límite de dos chunks sea encontrado correctamente.
+ 
+      Guardia MAX_CHUNKS:
+        Para archivos corruptos o sin 695, evita un loop infinito.
+        Con chunks de 512 KB: 20 chunks = ~10 MB máximo escaneados.
+ 
+    Parámetros:
+      file_block      : de clasificacion['file_block']      (patrón DynamoDB)
+      interpreter_fix : de clasificacion['interpreter_fix'] (documentado; no afecta el escaneo)
+    """
+    fecha_default    = datetime.utcnow().strftime("%Y-%m-%d")
+    BLOCK_SIZE       = 1014          # 1012 payload + 2 separador (formato bloqueado)
+    BLOCKS_PER_CHUNK = 8192             # ~8.3 MB por chunk → reduce requests S
+    CHUNK_PLAIN      = 8 * 1024 * 1024  # 8 MB para archivos no bloqueados
+    OVERLAP          = 8 * 1024      # 8 KB: mayor que cualquier mensaje IPM típico
+    MAX_CHUNKS       = 100            # guardia: ~10 MB máximo antes de rendirse
+ 
+    # ── 1. Tamaño del archivo (head_object, sin descarga) ─────────────────
+    try:
+        head      = s3.head_object(Bucket=bucket, Key=key)
+        file_size = head['ContentLength']
+    except Exception as e:
+        logger.error(f"  MC: error en head_object s3://{bucket}/{key}: {e}")
+        return fecha_default
+ 
+    if file_size == 0:
+        logger.warning(f"  MC: archivo vacío | key={key}")
+        return fecha_default
+ 
+    # ── 2. Calcular tamaño de chunk en bytes del archivo en disco ─────────
+    if file_block:
+        # Alinear a múltiplo de 1014 para que _mc_unblock_chunk no corrompa
+        # el límite entre bloques al procesar cada chunk.
+        chunk_size = BLOCKS_PER_CHUNK * BLOCK_SIZE   # ej. 512 × 1014 = 519 168 bytes
+    else:
+        chunk_size = CHUNK_PLAIN                     # 524 288 bytes
+ 
+    # ── 3. Leer desde el inicio, chunk a chunk, hasta encontrar el 695 ───
+    remainder   = b""   # bytes sobrantes del chunk anterior (overlap)
+    offset      = 0     # posición actual en el archivo (bytes en disco)
+    chunks_read = 0
+ 
+    while offset < file_size and chunks_read < MAX_CHUNKS:
+ 
+        end_byte = min(offset + chunk_size - 1, file_size - 1)
+ 
+        try:
+            response  = s3.get_object(Bucket=bucket, Key=key, Range=f'bytes={offset}-{end_byte}')
+            raw_chunk = response['Body'].read()
+        except Exception as e:
+            logger.error(f"  MC: error leyendo chunk {chunks_read + 1} de s3://{bucket}/{key}: {e}")
+            return fecha_default
+ 
+        chunks_read += 1
+        logger.info(
+            f"  MC: chunk {chunks_read} | bytes={offset}-{end_byte} "
+            f"(~{(end_byte - offset + 1) // 1024} KB) | file_block={file_block}"
+        )
+
+        # ── 3a. Desbloquear si es necesario ───────────────────────────────
+        if file_block:
+            raw_chunk = _mc_unblock_chunk(raw_chunk)
+ 
+        # ── 3b. Anteponer overlap del chunk anterior ──────────────────────
+        # Garantiza que mensajes partidos en el límite del chunk anterior
+        # sean visibles completos en este escaneo.
+        data = remainder + raw_chunk
+ 
+        # ── 3c. Escanear buscando el PRIMER 695 ───────────────────────────
+        file_dt = _mc_scan_for_695(data)
+ 
+        if file_dt:
+            for fmt in ("%y%m%d", "%m%d%y"):
+                try:
+                    fecha = datetime.strptime(file_dt, fmt).strftime("%Y-%m-%d")
+                    logger.info(
+                        f"  MC: fecha extraída={fecha} "
+                        f"| file_dt={file_dt!r} | chunk={chunks_read} | key={key}"
+                    )
+                    return fecha
+                except ValueError:
+                    continue
+            logger.warning(f"  MC: file_dt no parseable={file_dt!r} | key={key}")
+            return fecha_default
+ 
+        # ── 3d. Guardar overlap para el siguiente chunk ───────────────────
+        remainder = data[-OVERLAP:] if len(data) > OVERLAP else data
+        offset    = end_byte + 1
+
+    # ── 4. Fallback ────────────────────────────────────────────────────────
+    if chunks_read >= MAX_CHUNKS:
+        logger.warning(
+            f"  MC: límite de {MAX_CHUNKS} chunks alcanzado sin encontrar 695 | key={key}"
+        )
+    else:
+        logger.warning(f"  MC: no se encontró trailer 695 | key={key}")
+ 
+    return fecha_default
+    
+
+
+
+
 
 # =============================================================================
 # CLASIFICACIÓN DE ARCHIVOS
@@ -502,7 +913,11 @@ def clasificar_archivo(filename: str, patrones: List[Dict]) -> Optional[Dict]:
                     "direction":     patron.get("direction", "UNKNOWN"),
                     "file_type":     patron.get("file_type", "UNKNOWN"),
                     "customer_code": patron.get("customer_code"),
-                    "pattern_id":    patron.get("pattern_id")
+                    "pattern_id":    patron.get("pattern_id"),
+                    # Configuración de lectura MC: mismos campos que usa
+                    # needs_unblock_for_file / needs_interpreter_fix en mc_interpreter_handler
+                    "file_block":      _mc_to_bool(patron.get("file_block",      False)),
+                    "interpreter_fix": _mc_to_bool(patron.get("interpreter_fix", True)),
                 }
         except re.error as e:
             logger.warning(f"  Regex inválido en patrón {patron.get('pattern_id')}: {e}")
@@ -797,7 +1212,12 @@ def lambda_handler(event, context):
             elif clasificacion['brand'] == 'VISA':
                 file_date= extraer_fecha(bucket, key)
             elif clasificacion['brand'] == 'MASTERCARD':
-                pass
+                file_date = extraer_fecha_mc(
+                    bucket=bucket,
+                    key=key,
+                    file_block=clasificacion.get('file_block', False),
+                    interpreter_fix=clasificacion.get('interpreter_fix', True),
+                )
             
             # Extraer tamaño de archivo                        
             file_size = obtener_file_size(bucket, key, event_size)
