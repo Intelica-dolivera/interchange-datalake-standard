@@ -1,20 +1,20 @@
 {
-  "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-interpreter",
-  "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-interpreter",
+  "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-clean",
+  "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-clean",
   "Runtime": "python3.11",
   "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-mc-role",
   "Handler": "handler.lambda_handler",
-  "CodeSize": 17831,
-  "Description": "",
-  "Timeout": 480,
+  "CodeSize": 9287,
+  "Description": "Test",
+  "Timeout": 300,
   "MemorySize": 10240,
-  "LastModified": "2026-05-26T01:35:35.000+0000",
-  "CodeSha256": "Jji4PRjxINowP72totGOGrofCiNigLR6TnUCq8P4GTc=",
+  "LastModified": "2026-05-25T20:39:41.000+0000",
+  "CodeSha256": "mzkg4RXEGeuos+NopiBHkifPc3FFnO00bcJShSxAmWQ=",
   "Version": "$LATEST",
   "TracingConfig": {
     "Mode": "PassThrough"
   },
-  "RevisionId": "71f7dc98-5f74-41de-8947-a7310816d39e",
+  "RevisionId": "da5e5647-a324-4455-bcd3-21afc5941bdd",
   "Layers": [
     {
       "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:2",
@@ -26,7 +26,7 @@
   "PackageType": "Zip",
   "Architectures": ["x86_64"],
   "EphemeralStorage": {
-    "Size": 512
+    "Size": 10240
   },
   "SnapStart": {
     "ApplyOn": "None",
@@ -37,6 +37,6 @@
   },
   "LoggingConfig": {
     "LogFormat": "Text",
-    "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-mc-interpreter"
+    "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-mc-clean"
   }
 }

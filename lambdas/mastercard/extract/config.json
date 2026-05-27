@@ -1,20 +1,27 @@
 {
-  "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-interpreter",
-  "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-interpreter",
+  "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-extract",
+  "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-extract",
   "Runtime": "python3.11",
   "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-mc-role",
   "Handler": "handler.lambda_handler",
-  "CodeSize": 17831,
+  "CodeSize": 8589,
   "Description": "",
-  "Timeout": 480,
+  "Timeout": 900,
   "MemorySize": 10240,
-  "LastModified": "2026-05-26T01:35:35.000+0000",
-  "CodeSha256": "Jji4PRjxINowP72totGOGrofCiNigLR6TnUCq8P4GTc=",
+  "LastModified": "2026-05-26T21:27:48.000+0000",
+  "CodeSha256": "y2bMxPLU5uo1LsXOyK9NQJN5d7q8qWLECger5XN0Hd4=",
   "Version": "$LATEST",
+  "Environment": {
+    "Variables": {
+      "S3_BUCKET": "itl-0004-itx-dev-intchg-02-s3-staging",
+      "DYNAMO_TABLE_FIELDS": "itl-0004-itx-dev-dynamo-mastercard_fields-02",
+      "DYNAMO_TABLE_FILE_CONTROL": "itl-0004-itx-dev-dynamo-file_control-02"
+    }
+  },
   "TracingConfig": {
     "Mode": "PassThrough"
   },
-  "RevisionId": "71f7dc98-5f74-41de-8947-a7310816d39e",
+  "RevisionId": "56d9b8d7-44f6-40bf-a6cc-4c6d489934d3",
   "Layers": [
     {
       "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:2",
@@ -37,6 +44,6 @@
   },
   "LoggingConfig": {
     "LogFormat": "Text",
-    "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-mc-interpreter"
+    "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-mc-extract"
   }
 }
