@@ -1,9 +1,974 @@
 {
-    "Comment": "MC Pipeline placeholder",
-    "StartAt": "Placeholder",
-    "States": {
-      "Placeholder": {
-        "Type": "Succeed"
-      }
+  "Comment": "ITX Mastercard Orchestrator - Pipeline completo (Interpreter + Transform + Extract + Clean + Calculate + Interchange + Store + Archive) - v1",
+  "StartAt": "Interpreter",
+  "States": {
+
+    "Interpreter": {
+      "Type": "Task",
+      "Comment": "Parsea el archivo IPM/ISO-8583 a Parquets RAW por MTI - Paso 0 (exclusivo MC)",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-interpreter",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.interpreter_result",
+      "ResultSelector": {
+        "statusCode.$": "$.Payload.statusCode",
+        "body.$": "States.StringToJson($.Payload.body)"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleInterpreterException",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CheckInterpreterResult"
+    },
+
+    "CheckInterpreterResult": {
+      "Type": "Choice",
+      "Comment": "Verifica si Interpreter generó outputs válidos",
+      "Choices": [
+        {
+          "Variable": "$.interpreter_result.statusCode",
+          "NumericGreaterThanEquals": 400,
+          "Next": "InterpreterFailed"
+        },
+        {
+          "Variable": "$.interpreter_result.body.outputs_count",
+          "NumericEquals": 0,
+          "Next": "NoDataToProcess"
+        }
+      ],
+      "Default": "PrepareTransformInput"
+    },
+
+    "HandleInterpreterException": {
+      "Type": "Pass",
+      "Comment": "Normaliza el estado cuando Interpreter lanza excepción",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "INTERPRETER",
+        "message": "Interpreter phase threw an exception",
+        "error.$": "$.error",
+        "file_id.$": "$.file_id",
+        "client_id.$": "$.client_id",
+        "brand.$": "$.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "InterpreterFailed": {
+      "Type": "Pass",
+      "Comment": "Interpreter retornó error",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "INTERPRETER",
+        "message": "Interpreter phase returned error status",
+        "statusCode.$": "$.interpreter_result.statusCode",
+        "file_id.$": "$.file_id",
+        "client_id.$": "$.client_id",
+        "brand.$": "$.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "NoDataToProcess": {
+      "Type": "Pass",
+      "Comment": "Interpreter no encontró MTIs para procesar en el archivo",
+      "Parameters": {
+        "status": "COMPLETED_NO_DATA",
+        "message": "No MTIs found in file",
+        "file_id.$": "$.file_id",
+        "client_id.$": "$.client_id",
+        "brand.$": "$.brand"
+      },
+      "ResultPath": "$.completion_info",
+      "Next": "UpdateStatusNoData"
+    },
+
+    "PrepareTransformInput": {
+      "Type": "Pass",
+      "Comment": "Prepara el payload para Lambda Transform",
+      "Parameters": {
+        "client_id.$": "$.client_id",
+        "file_id.$": "$.file_id",
+        "brand.$": "$.brand",
+        "brand_id.$": "$.brand_id",
+        "file_type.$": "$.file_type",
+        "file_date.$": "$.file_date",
+        "content_hash.$": "$.content_hash",
+        "outputs.$": "$.interpreter_result.body.outputs"
+      },
+      "ResultPath": "$.transform_input",
+      "Next": "Transform"
+    },
+
+    "Transform": {
+      "Type": "Task",
+      "Comment": "Estructura DEs y PDS del IPM por MTI - Paso 1",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-transform",
+        "Payload.$": "$.transform_input"
+      },
+      "ResultPath": "$.transform_result",
+      "ResultSelector": {
+        "statusCode.$": "$.Payload.statusCode",
+        "body.$": "States.StringToJson($.Payload.body)"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleTransformException",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CheckTransformResult"
+    },
+
+    "CheckTransformResult": {
+      "Type": "Choice",
+      "Comment": "Verifica si Transform procesó correctamente",
+      "Choices": [
+        {
+          "Variable": "$.transform_result.statusCode",
+          "NumericGreaterThanEquals": 400,
+          "Next": "TransformFailed"
+        }
+      ],
+      "Default": "PrepareExtractInput"
+    },
+
+    "HandleTransformException": {
+      "Type": "Pass",
+      "Comment": "Normaliza el estado cuando Transform lanza excepción",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "TRANSFORM",
+        "message": "Transform phase threw an exception",
+        "error.$": "$.error",
+        "file_id.$": "$.transform_input.file_id",
+        "client_id.$": "$.transform_input.client_id",
+        "brand.$": "$.transform_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "TransformFailed": {
+      "Type": "Pass",
+      "Comment": "Transform retornó error",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "TRANSFORM",
+        "message": "Transform phase returned error status",
+        "statusCode.$": "$.transform_result.statusCode",
+        "file_id.$": "$.transform_input.file_id",
+        "client_id.$": "$.transform_input.client_id",
+        "brand.$": "$.transform_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "PrepareExtractInput": {
+      "Type": "Pass",
+      "Comment": "Prepara el payload para Lambda Extract",
+      "Parameters": {
+        "client_id.$": "$.transform_input.client_id",
+        "file_id.$": "$.transform_input.file_id",
+        "brand.$": "$.transform_input.brand",
+        "brand_id.$": "$.transform_input.brand_id",
+        "file_type.$": "$.transform_input.file_type",
+        "file_date.$": "$.transform_input.file_date",
+        "content_hash.$": "$.transform_input.content_hash",
+        "mtis_processed.$": "$.transform_result.body.mtis_processed"
+      },
+      "ResultPath": "$.extract_input",
+      "Next": "Extract"
+    },
+
+    "Extract": {
+      "Type": "Task",
+      "Comment": "Extrae campos por nombre desde los Parquets TRA - Paso 2",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-extract",
+        "Payload.$": "$.extract_input"
+      },
+      "ResultPath": "$.extract_result",
+      "ResultSelector": {
+        "statusCode.$": "$.Payload.statusCode",
+        "body.$": "States.StringToJson($.Payload.body)"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleExtractException",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CheckExtractResult"
+    },
+
+    "CheckExtractResult": {
+      "Type": "Choice",
+      "Comment": "Verifica si Extract procesó correctamente",
+      "Choices": [
+        {
+          "Variable": "$.extract_result.statusCode",
+          "NumericGreaterThanEquals": 400,
+          "Next": "ExtractFailed"
+        }
+      ],
+      "Default": "PrepareCleanInput"
+    },
+
+    "HandleExtractException": {
+      "Type": "Pass",
+      "Comment": "Normaliza el estado cuando Extract lanza excepción",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "EXTRACT",
+        "message": "Extract phase threw an exception",
+        "error.$": "$.error",
+        "file_id.$": "$.extract_input.file_id",
+        "client_id.$": "$.extract_input.client_id",
+        "brand.$": "$.extract_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "ExtractFailed": {
+      "Type": "Pass",
+      "Comment": "Extract retornó error",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "EXTRACT",
+        "message": "Extract phase returned error status",
+        "statusCode.$": "$.extract_result.statusCode",
+        "file_id.$": "$.extract_input.file_id",
+        "client_id.$": "$.extract_input.client_id",
+        "brand.$": "$.extract_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "PrepareCleanInput": {
+      "Type": "Pass",
+      "Comment": "Prepara el payload para Lambda Clean",
+      "Parameters": {
+        "client_id.$": "$.extract_input.client_id",
+        "file_id.$": "$.extract_input.file_id",
+        "brand.$": "$.extract_input.brand",
+        "brand_id.$": "$.extract_input.brand_id",
+        "file_type.$": "$.extract_input.file_type",
+        "file_date.$": "$.extract_input.file_date",
+        "content_hash.$": "$.extract_input.content_hash",
+        "mtis_processed.$": "$.extract_result.body.mtis_processed"
+      },
+      "ResultPath": "$.clean_input",
+      "Next": "Clean"
+    },
+
+    "Clean": {
+      "Type": "Task",
+      "Comment": "Normaliza y castea campos de los Parquets EXT - Paso 3",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-clean",
+        "Payload.$": "$.clean_input"
+      },
+      "ResultPath": "$.clean_result",
+      "ResultSelector": {
+        "statusCode.$": "$.Payload.statusCode",
+        "body.$": "States.StringToJson($.Payload.body)"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleCleanException",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CheckCleanResult"
+    },
+
+    "CheckCleanResult": {
+      "Type": "Choice",
+      "Comment": "Verifica si Clean procesó correctamente",
+      "Choices": [
+        {
+          "Variable": "$.clean_result.statusCode",
+          "NumericGreaterThanEquals": 400,
+          "Next": "CleanFailed"
+        }
+      ],
+      "Default": "CleanSuccess"
+    },
+
+    "HandleCleanException": {
+      "Type": "Pass",
+      "Comment": "Normaliza el estado cuando Clean lanza excepción",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "CLEAN",
+        "message": "Clean phase threw an exception",
+        "error.$": "$.error",
+        "file_id.$": "$.clean_input.file_id",
+        "client_id.$": "$.clean_input.client_id",
+        "brand.$": "$.clean_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "CleanFailed": {
+      "Type": "Pass",
+      "Comment": "Clean retornó error",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "CLEAN",
+        "message": "Clean phase returned error status",
+        "statusCode.$": "$.clean_result.statusCode",
+        "file_id.$": "$.clean_input.file_id",
+        "client_id.$": "$.clean_input.client_id",
+        "brand.$": "$.clean_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "CleanSuccess": {
+      "Type": "Pass",
+      "Comment": "Clean exitoso - consolida resúmenes y prepara para Calculate (Glue Job)",
+      "Parameters": {
+        "status": "CLEAN_COMPLETED",
+        "message": "Interpreter, Transform, Extract and Clean phases completed successfully",
+        "file_id.$": "$.clean_input.file_id",
+        "client_id.$": "$.clean_input.client_id",
+        "brand.$": "$.clean_input.brand",
+        "file_type.$": "$.clean_input.file_type",
+        "file_date.$": "$.clean_input.file_date",
+        "content_hash.$": "$.clean_input.content_hash",
+        "interpreter_summary": {
+          "outputs_count.$": "$.interpreter_result.body.outputs_count"
+        },
+        "transform_summary": {
+          "mtis_processed.$": "$.transform_result.body.mtis_processed"
+        },
+        "extract_summary": {
+          "mtis_processed.$": "$.extract_result.body.mtis_processed"
+        },
+        "clean_summary": {
+          "mtis_processed.$": "$.clean_result.body.mtis_processed"
+        }
+      },
+      "ResultPath": "$.success_info",
+      "Next": "PrepareCalculateInput"
+    },
+
+    "PrepareCalculateInput": {
+      "Type": "Pass",
+      "Comment": "Prepara el payload para Glue Job Calculate. Construye rutas CLN por MTI siguiendo la convención {client_id}/MC/400_IPM_{MTI}_CLN/file_type={file_type}/date={file_date}/",
+      "Parameters": {
+        "client_id.$": "$.clean_input.client_id",
+        "file_id.$": "$.clean_input.file_id",
+        "brand.$": "$.clean_input.brand",
+        "brand_id.$": "$.clean_input.brand_id",
+        "file_type.$": "$.clean_input.file_type",
+        "file_date.$": "$.clean_input.file_date",
+        "content_hash.$": "$.clean_input.content_hash",
+        "dynamodb_table_client": "itl-0004-itx-dev-dynamo-client-02",
+        "dynamodb_table_fields": "itl-0004-itx-dev-dynamo-mastercard_fields-02",
+        "s3_key_1644_cln.$": "States.Format('{}/MC/400_IPM_1644_CLN/file_type={}/date={}/', $.clean_input.client_id, $.clean_input.file_type, $.clean_input.file_date)",
+        "outputs": [
+          {
+            "mti": "1240",
+            "s3_key.$": "States.Format('{}/MC/400_IPM_1240_CLN/file_type={}/date={}/', $.clean_input.client_id, $.clean_input.file_type, $.clean_input.file_date)"
+          },
+          {
+            "mti": "1442",
+            "s3_key.$": "States.Format('{}/MC/400_IPM_1442_CLN/file_type={}/date={}/', $.clean_input.client_id, $.clean_input.file_type, $.clean_input.file_date)"
+          },
+          {
+            "mti": "1644",
+            "s3_key.$": "States.Format('{}/MC/400_IPM_1644_CLN/file_type={}/date={}/', $.clean_input.client_id, $.clean_input.file_type, $.clean_input.file_date)"
+          },
+          {
+            "mti": "1740",
+            "s3_key.$": "States.Format('{}/MC/400_IPM_1740_CLN/file_type={}/date={}/', $.clean_input.client_id, $.clean_input.file_type, $.clean_input.file_date)"
+          }
+        ]
+      },
+      "ResultPath": "$.calculate_input",
+      "Next": "Calculate"
+    },
+
+    "Calculate": {
+      "Type": "Task",
+      "Comment": "Calcula campos derivados y aplica tarifas IAR - Paso 4 (Glue Job PySpark)",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "itl-0004-itx-dev-intchg-02-glue-mc-calculate",
+        "Arguments": {
+          "--outputs.$": "States.JsonToString($.calculate_input.outputs)",
+          "--client_id.$": "$.calculate_input.client_id",
+          "--file_id.$": "$.calculate_input.file_id",
+          "--file_type.$": "$.calculate_input.file_type",
+          "--file_date.$": "$.calculate_input.file_date",
+          "--dynamodb_table_client.$": "$.calculate_input.dynamodb_table_client",
+          "--dynamodb_table_fields.$": "$.calculate_input.dynamodb_table_fields",
+          "--s3_key_1644_cln.$": "$.calculate_input.s3_key_1644_cln"
+        }
+      },
+      "ResultPath": "$.calculate_job_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["Glue.AWSGlueException"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": ["Glue.ConcurrentRunsExceededException"],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 10,
+          "BackoffRate": 1.5,
+          "Comment": "Espera hasta 10 veces si Glue está ocupado con otro archivo"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleCalculateException",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CheckCalculateResult"
+    },
+
+    "CheckCalculateResult": {
+      "Type": "Choice",
+      "Comment": "Verifica si Calculate (Glue) procesó correctamente",
+      "Choices": [
+        {
+          "Variable": "$.calculate_job_result.JobRunState",
+          "StringEquals": "FAILED",
+          "Next": "CalculateFailed"
+        },
+        {
+          "Variable": "$.calculate_job_result.JobRunState",
+          "StringEquals": "STOPPED",
+          "Next": "CalculateFailed"
+        },
+        {
+          "Variable": "$.calculate_job_result.JobRunState",
+          "StringEquals": "TIMEOUT",
+          "Next": "CalculateFailed"
+        }
+      ],
+      "Default": "CalculateSuccess"
+    },
+
+    "HandleCalculateException": {
+      "Type": "Pass",
+      "Comment": "Normaliza el estado cuando Calculate lanza excepción",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "CALCULATE",
+        "message": "Calculate phase (Glue Job) threw an exception",
+        "error.$": "$.error",
+        "file_id.$": "$.calculate_input.file_id",
+        "client_id.$": "$.calculate_input.client_id",
+        "brand.$": "$.calculate_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "CalculateFailed": {
+      "Type": "Pass",
+      "Comment": "Calculate (Glue) falló",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "CALCULATE",
+        "message": "Calculate phase (Glue Job) failed",
+        "job_run_state.$": "$.calculate_job_result.JobRunState",
+        "error_message.$": "$.calculate_job_result.ErrorMessage",
+        "file_id.$": "$.calculate_input.file_id",
+        "client_id.$": "$.calculate_input.client_id",
+        "brand.$": "$.calculate_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "CalculateSuccess": {
+      "Type": "Pass",
+      "Comment": "Calculate exitoso - consolida todos los resultados y prepara para Interchange",
+      "Parameters": {
+        "status": "CALCULATE_COMPLETED",
+        "message": "Interpreter, Transform, Extract, Clean and Calculate phases completed successfully",
+        "file_id.$": "$.calculate_input.file_id",
+        "client_id.$": "$.calculate_input.client_id",
+        "brand.$": "$.calculate_input.brand",
+        "file_type.$": "$.calculate_input.file_type",
+        "file_date.$": "$.calculate_input.file_date",
+        "content_hash.$": "$.calculate_input.content_hash",
+        "interpreter_summary.$": "$.success_info.interpreter_summary",
+        "transform_summary.$": "$.success_info.transform_summary",
+        "extract_summary.$": "$.success_info.extract_summary",
+        "clean_summary.$": "$.success_info.clean_summary",
+        "calculate_summary": {
+          "job_run_id.$": "$.calculate_job_result.Id",
+          "job_run_state.$": "$.calculate_job_result.JobRunState",
+          "execution_time_seconds.$": "$.calculate_job_result.ExecutionTime",
+          "workers.$": "$.calculate_job_result.NumberOfWorkers"
+        },
+        "cal_outputs.$": "$.calculate_input.outputs"
+      },
+      "ResultPath": "$.final_success_info",
+      "Next": "PrepareInterchangeInput"
+    },
+
+    "PrepareInterchangeInput": {
+      "Type": "Pass",
+      "Comment": "Prepara el payload para Glue Job Interchange (PySpark)",
+      "Parameters": {
+        "outputs.$": "$.final_success_info.cal_outputs",
+        "client_id.$": "$.final_success_info.client_id",
+        "file_id.$": "$.final_success_info.file_id",
+        "brand.$": "$.final_success_info.brand",
+        "brand_id.$": "$.calculate_input.brand_id",
+        "file_type.$": "$.final_success_info.file_type",
+        "file_date.$": "$.final_success_info.file_date",
+        "content_hash.$": "$.final_success_info.content_hash",
+        "staging_bucket": "itl-0004-itx-dev-intchg-02-s3-staging",
+        "reference_bucket": "itl-0004-itx-dev-intchg-02-s3-reference"
+      },
+      "ResultPath": "$.interchange_input",
+      "Next": "Interchange"
+    },
+
+    "Interchange": {
+      "Type": "Task",
+      "Comment": "Asigna tarifas IAR y realiza Data Quality vs MTI 1644 - Paso 5 (Glue Job PySpark)",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "itl-0004-itx-dev-intchg-02-glue-mc-interchange",
+        "Arguments": {
+          "--outputs.$": "States.JsonToString($.interchange_input.outputs)",
+          "--client_id.$": "$.interchange_input.client_id",
+          "--file_id.$": "$.interchange_input.file_id",
+          "--file_type.$": "$.interchange_input.file_type",
+          "--file_date.$": "$.interchange_input.file_date",
+          "--staging_bucket.$": "$.interchange_input.staging_bucket",
+          "--reference_bucket.$": "$.interchange_input.reference_bucket"
+        }
+      },
+      "ResultPath": "$.interchange_job_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["Glue.AWSGlueException"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": ["Glue.ConcurrentRunsExceededException"],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 10,
+          "BackoffRate": 1.5,
+          "Comment": "Espera hasta 10 veces si Glue está ocupado con otro archivo"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleInterchangeException",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CheckInterchangeResult"
+    },
+
+    "CheckInterchangeResult": {
+      "Type": "Choice",
+      "Comment": "Verifica si Interchange (Glue) procesó correctamente",
+      "Choices": [
+        {
+          "Variable": "$.interchange_job_result.JobRunState",
+          "StringEquals": "FAILED",
+          "Next": "InterchangeFailed"
+        },
+        {
+          "Variable": "$.interchange_job_result.JobRunState",
+          "StringEquals": "STOPPED",
+          "Next": "InterchangeFailed"
+        },
+        {
+          "Variable": "$.interchange_job_result.JobRunState",
+          "StringEquals": "TIMEOUT",
+          "Next": "InterchangeFailed"
+        }
+      ],
+      "Default": "PrepareStoreInput"
+    },
+
+    "HandleInterchangeException": {
+      "Type": "Pass",
+      "Comment": "Normaliza el estado cuando Interchange lanza excepción",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "INTERCHANGE",
+        "message": "Interchange phase (Glue Job) threw an exception",
+        "error.$": "$.error",
+        "file_id.$": "$.interchange_input.file_id",
+        "client_id.$": "$.interchange_input.client_id",
+        "brand.$": "$.interchange_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "InterchangeFailed": {
+      "Type": "Pass",
+      "Comment": "Interchange (Glue) falló",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "INTERCHANGE",
+        "message": "Interchange phase (Glue Job) failed",
+        "job_run_state.$": "$.interchange_job_result.JobRunState",
+        "error_message.$": "$.interchange_job_result.ErrorMessage",
+        "file_id.$": "$.interchange_input.file_id",
+        "client_id.$": "$.interchange_input.client_id",
+        "brand.$": "$.interchange_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "PrepareStoreInput": {
+      "Type": "Pass",
+      "Comment": "Prepara el payload para Lambda Store - usa outputs del clean (s3_keys de 400_CLN)",
+      "Parameters": {
+        "outputs.$": "$.interchange_input.outputs",
+        "client_id.$": "$.interchange_input.client_id",
+        "file_id.$": "$.interchange_input.file_id",
+        "brand.$": "$.interchange_input.brand",
+        "brand_id.$": "$.interchange_input.brand_id",
+        "file_type.$": "$.interchange_input.file_type",
+        "file_date.$": "$.interchange_input.file_date",
+        "content_hash.$": "$.interchange_input.content_hash",
+        "staging_bucket": "itl-0004-itx-dev-intchg-02-s3-staging",
+        "operational_bucket": "itl-0004-itx-dev-intchg-02-s3-operational"
+      },
+      "ResultPath": "$.store_input",
+      "Next": "Store"
+    },
+
+    "Store": {
+      "Type": "Task",
+      "Comment": "Consolida CLN + CAL + ITX en Parquet final en operational - Paso 6",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-store",
+        "Payload.$": "$.store_input"
+      },
+      "ResultPath": "$.store_result",
+      "ResultSelector": {
+        "statusCode.$": "$.Payload.statusCode",
+        "body.$": "States.StringToJson($.Payload.body)"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleStoreException",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CheckStoreResult"
+    },
+
+    "CheckStoreResult": {
+      "Type": "Choice",
+      "Comment": "Verifica si Store procesó correctamente",
+      "Choices": [
+        {
+          "Variable": "$.store_result.statusCode",
+          "NumericGreaterThanEquals": 400,
+          "Next": "StoreFailed"
+        }
+      ],
+      "Default": "UpdateStatusStoreCompleted"
+    },
+
+    "HandleStoreException": {
+      "Type": "Pass",
+      "Comment": "Normaliza el estado cuando Store lanza excepción",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "STORE",
+        "message": "Store phase threw an exception",
+        "error.$": "$.error",
+        "file_id.$": "$.store_input.file_id",
+        "client_id.$": "$.store_input.client_id",
+        "brand.$": "$.store_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "StoreFailed": {
+      "Type": "Pass",
+      "Comment": "Store retornó error",
+      "Parameters": {
+        "status": "FAILED",
+        "phase": "STORE",
+        "message": "Store phase returned error status",
+        "statusCode.$": "$.store_result.statusCode",
+        "file_id.$": "$.store_input.file_id",
+        "client_id.$": "$.store_input.client_id",
+        "brand.$": "$.store_input.brand"
+      },
+      "ResultPath": "$.failure_info",
+      "Next": "UpdateStatusFailed"
+    },
+
+    "UpdateStatusStoreCompleted": {
+      "Type": "Task",
+      "Comment": "Actualiza estado en DynamoDB a STORE_COMPLETED antes de archivar",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "itl-0004-itx-dev-dynamo-file_control-02",
+        "Key": {
+          "file_id": {
+            "S.$": "$.store_input.file_id"
+          }
+        },
+        "UpdateExpression": "SET control_status = :status, store_result = :store",
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "STORE_COMPLETED"
+          },
+          ":store": {
+            "S.$": "States.JsonToString($.store_result)"
+          }
+        }
+      },
+      "ResultPath": "$.dynamodb_result",
+      "Next": "PrepareArchiveInput"
+    },
+
+    "PrepareArchiveInput": {
+      "Type": "Pass",
+      "Comment": "Prepara el payload para Lambda Archive - usa campos raíz preservados desde el input inicial",
+      "Parameters": {
+        "file_id.$": "$.file_id",
+        "client_id.$": "$.client_id",
+        "brand.$": "$.brand",
+        "file_type.$": "$.file_type",
+        "file_date.$": "$.file_date",
+        "s3_key_landing.$": "$.s3_key_landing",
+        "bucket_landing.$": "$.bucket_landing"
+      },
+      "ResultPath": "$.archive_input",
+      "Next": "Archive"
+    },
+
+    "Archive": {
+      "Type": "Task",
+      "Comment": "Mueve el archivo original de landing a archive - SIEMPRE se ejecuta",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-archive-file",
+        "Payload.$": "$.archive_input"
+      },
+      "ResultPath": "$.archive_result",
+      "ResultSelector": {
+        "status.$": "$.Payload.status",
+        "file_id.$": "$.Payload.file_id",
+        "archive_key.$": "$.Payload.archive_key"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleArchiveException",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "UpdateStatusDone"
+    },
+
+    "HandleArchiveException": {
+      "Type": "Pass",
+      "Comment": "Archive falló — el pipeline ya terminó, solo registrar el error",
+      "Parameters": {
+        "status": "ARCHIVE_FAILED",
+        "message": "Archive phase failed — file may still be in landing",
+        "error.$": "$.error",
+        "file_id.$": "$.file_id"
+      },
+      "ResultPath": "$.archive_error",
+      "Next": "UpdateStatusDone"
+    },
+
+    "UpdateStatusDone": {
+      "Type": "Task",
+      "Comment": "Estado final del pipeline — DONE si todo OK, DONE_ARCHIVE_FAILED si archive falló",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "itl-0004-itx-dev-dynamo-file_control-02",
+        "Key": {
+          "file_id": {
+            "S.$": "$.file_id"
+          }
+        },
+        "UpdateExpression": "SET control_status = :status, process_finish_ts = :finish_ts, archive_key = :archive_key",
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "DONE"
+          },
+          ":finish_ts": {
+            "S.$": "$$.State.EnteredTime"
+          },
+          ":archive_key": {
+            "S.$": "States.JsonToString($.archive_result)"
+          }
+        }
+      },
+      "ResultPath": "$.final_dynamodb_result",
+      "End": true
+    },
+
+    "UpdateStatusNoData": {
+      "Type": "Task",
+      "Comment": "Actualiza estado en DynamoDB a COMPLETED_NO_DATA — luego archiva",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "itl-0004-itx-dev-dynamo-file_control-02",
+        "Key": {
+          "file_id": {
+            "S.$": "$.completion_info.file_id"
+          }
+        },
+        "UpdateExpression": "SET control_status = :status, process_finish_ts = :finish_ts, completion_info = :info",
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "COMPLETED_NO_DATA"
+          },
+          ":finish_ts": {
+            "S.$": "$$.State.EnteredTime"
+          },
+          ":info": {
+            "S.$": "States.JsonToString($.completion_info)"
+          }
+        }
+      },
+      "ResultPath": "$.dynamodb_result",
+      "Next": "PrepareArchiveInput"
+    },
+
+    "UpdateStatusFailed": {
+      "Type": "Task",
+      "Comment": "Actualiza estado en DynamoDB a FAILED — luego archiva siempre",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "itl-0004-itx-dev-dynamo-file_control-02",
+        "Key": {
+          "file_id": {
+            "S.$": "$.failure_info.file_id"
+          }
+        },
+        "UpdateExpression": "SET control_status = :status, process_finish_ts = :finish_ts, error_message = :error",
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "FAILED"
+          },
+          ":finish_ts": {
+            "S.$": "$$.State.EnteredTime"
+          },
+          ":error": {
+            "S.$": "States.JsonToString($.failure_info)"
+          }
+        }
+      },
+      "ResultPath": "$.dynamodb_result",
+      "Next": "PrepareArchiveInput"
     }
+
   }
+}
