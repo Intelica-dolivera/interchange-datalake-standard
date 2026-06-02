@@ -70,3 +70,49 @@ Decisiones no obvias tomadas durante el desarrollo. Cada entrada explica el **qu
 - Archivos pueden venir "bloqueados" en bloques de 1014 bytes (requiere `unblock_1014`)
 - Encoding configurable por cliente: `latin-1` o `cp500` (EBCDIC), definido en DynamoDB tabla `client`
 - Mensajes delimitados por RDW (4 bytes big-endian)
+
+---
+
+## Por qué mc-interchange NO contrasta contra MTI 1644 (a diferencia de Visa vs VSS)
+
+**Decisión:** `glue-mc-interchange` solo procesa MTIs 1240 y 1442 (transaccionales). No realiza Data Quality contra MTI 1644 (mensajes de liquidación MC).
+
+**Razón:** El scope actual del interchange MC es la asignación de tarifas IAR a las transacciones. El contraste DQ contra los registros de liquidación 1644 es una funcionalidad adicional que puede incorporarse en una iteración posterior, cuando el pipeline transaccional esté completamente validado.
+
+**Diferencia con Visa:** `glue-vi-interchange` sí contrasta contra registros VSS (TC 46) como parte del mismo job. En MC, el MTI 1644 existe en la capa CLN pero no se usa en el interchange actual.
+
+**Inputs del interchange MC:** CLN (`400_IPM_{mti}_CLN`) + CAL (`500_IPM_{mti}_CAL`) + datos de referencia S3 (`currency/`, `exchange_rate/`, `mc_rules/`). Output: `600_IPM_{mti}_ITX`.
+
+---
+
+## Por qué mc-store fusiona Parquets por columnas nuevas (axis=1) y no por join de claves
+
+**Decisión:** `lmbd-mc-store` fusiona CLN + CAL + ITX usando `pd.concat(frames, axis=1)` — merge horizontal por índice posicional. Solo añade columnas que no existen en el frame anterior.
+
+**Razón:** El pipeline garantiza que CLN, CAL e ITX para el mismo MTI y archivo tienen exactamente el mismo número de filas en el mismo orden (no hay filtros ni reordenamiento entre etapas). Un join por clave añadiría complejidad y latencia sin beneficio. Si la garantía de orden se rompe en alguna etapa futura, esto se manifestará como datos incorrectos — señal de un bug upstream que hay que corregir allí.
+
+**Alternativa descartada:** Join por columna de clave de transacción. Descartado por complejidad (requiere definir PK compuesta por MTI) y porque la garantía de orden ya existe por diseño del pipeline.
+
+---
+
+## Por qué el router extrae la fecha MC desde el trailer 695 en chunks (sin descarga completa)
+
+**Decisión:** `extraer_fecha_mc()` en el router lee el archivo IPM en chunks de 8 MB buscando el primer trailer MTI 1644 / FC 695, extrae el PDS tag "0105" (file_idn) y deriva la fecha YYMMDD → YYYY-MM-DD. No descarga el archivo completo.
+
+**Razón:** Consistencia con el patrón ya usado para archivos Visa (solo los primeros 50 bytes del header). Los archivos MC pueden superar 1.5 GB — descargarlos completos en el router para extraer una fecha sería prohibitivo en costo y tiempo. El trailer 695 con la fecha suele estar en los primeros pocos MB del archivo.
+
+**Detalles de implementación:**
+- Archivos bloqueados (`file_block=True`): chunks alineados a múltiplos de 1014 bytes + `_mc_unblock_chunk` antes de parsear
+- Overlap de 8 KB entre chunks para no cortar mensajes en el límite de chunk
+- Guardia `MAX_CHUNKS=100` (~800 MB máximo antes de retornar `datetime.utcnow()` como fallback
+- Path de extracción: `DE48 del mensaje 695 → PDS tag "0105" → file_idn[3:9] → YYMMDD`
+
+---
+
+## Por qué los Glue jobs tienen args.json en el repositorio
+
+**Decisión:** Cada Glue job tiene un `args.json` junto a su script con los `DefaultArguments` usados en AWS.
+
+**Razón:** Permite reproducir exactamente la configuración del job (buckets, Spark conf, logging) desde el repositorio sin tener que consultar la consola AWS. También sirve como documentación de los argumentos que el Step Function debe pasar al invocar el job.
+
+**Contenido típico:** rutas S3 de staging y reference, configuración de Spark (rolling logs, event logs), habilitación de métricas y job insights CloudWatch.

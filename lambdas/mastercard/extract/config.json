@@ -1,49 +1,51 @@
-{
-  "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-extract",
-  "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-extract",
-  "Runtime": "python3.11",
-  "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-mc-role",
-  "Handler": "handler.lambda_handler",
-  "CodeSize": 8589,
-  "Description": "",
-  "Timeout": 900,
-  "MemorySize": 10240,
-  "LastModified": "2026-05-26T21:27:48.000+0000",
-  "CodeSha256": "y2bMxPLU5uo1LsXOyK9NQJN5d7q8qWLECger5XN0Hd4=",
-  "Version": "$LATEST",
-  "Environment": {
-    "Variables": {
-      "S3_BUCKET": "itl-0004-itx-dev-intchg-02-s3-staging",
-      "DYNAMO_TABLE_FIELDS": "itl-0004-itx-dev-dynamo-mastercard_fields-02",
-      "DYNAMO_TABLE_FILE_CONTROL": "itl-0004-itx-dev-dynamo-file_control-02"
+﻿{
+    "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-extract",
+    "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-extract",
+    "Runtime": "python3.11",
+    "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-mc-role",
+    "Handler": "handler.lambda_handler",
+    "CodeSize": 9929,
+    "Description": "",
+    "Timeout": 900,
+    "MemorySize": 10240,
+    "LastModified": "2026-05-29T02:20:30.000+0000",
+    "CodeSha256": "TxZAxHQP/nnohmeZv55GIvNijtApjerPq7wXaYY1pT8=",
+    "Version": "$LATEST",
+    "Environment": {
+        "Variables": {
+            "S3_BUCKET": "itl-0004-itx-dev-intchg-02-s3-staging",
+            "DYNAMO_TABLE_FIELDS": "itl-0004-itx-dev-dynamo-mastercard_fields-02",
+            "DYNAMO_TABLE_FILE_CONTROL": "itl-0004-itx-dev-dynamo-file_control-02"
+        }
+    },
+    "TracingConfig": {
+        "Mode": "PassThrough"
+    },
+    "RevisionId": "955ea0e4-48fb-4c81-9af6-7301f2b3cf19",
+    "Layers": [
+        {
+            "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:2",
+            "CodeSize": 64425635
+        }
+    ],
+    "State": "Active",
+    "LastUpdateStatus": "Successful",
+    "PackageType": "Zip",
+    "Architectures": [
+        "x86_64"
+    ],
+    "EphemeralStorage": {
+        "Size": 512
+    },
+    "SnapStart": {
+        "ApplyOn": "None",
+        "OptimizationStatus": "Off"
+    },
+    "RuntimeVersionConfig": {
+        "RuntimeVersionArn": "arn:aws:lambda:eu-south-2::runtime:53285ee2fb9fac4cc9ebbb3c5ac1845832297f816fabe2356a10a7e37355c64e"
+    },
+    "LoggingConfig": {
+        "LogFormat": "Text",
+        "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-mc-extract"
     }
-  },
-  "TracingConfig": {
-    "Mode": "PassThrough"
-  },
-  "RevisionId": "56d9b8d7-44f6-40bf-a6cc-4c6d489934d3",
-  "Layers": [
-    {
-      "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:2",
-      "CodeSize": 64425635
-    }
-  ],
-  "State": "Active",
-  "LastUpdateStatus": "Successful",
-  "PackageType": "Zip",
-  "Architectures": ["x86_64"],
-  "EphemeralStorage": {
-    "Size": 512
-  },
-  "SnapStart": {
-    "ApplyOn": "None",
-    "OptimizationStatus": "Off"
-  },
-  "RuntimeVersionConfig": {
-    "RuntimeVersionArn": "arn:aws:lambda:eu-south-2::runtime:a0dd170e909c9230a7e18f978320f0053271b75d0b703c836ab4f98f2e3f6a5a"
-  },
-  "LoggingConfig": {
-    "LogFormat": "Text",
-    "LogGroup": "/aws/lambda/itl-0004-itx-dev-intchg-02-lmbd-mc-extract"
-  }
 }

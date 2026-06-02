@@ -1,5 +1,5 @@
 """
-Lambda Transform Unificada - itl-0004-itx-dev-intchg-02-lmbd-vi-transform
+Lambda Transform Unificada - itx-transform
 ===========================================
 Lee el archivo CTF de S3 en UNA SOLA PASADA y genera los Parquets de:
   - BASEII (TC 05/06/07/25/26/27)

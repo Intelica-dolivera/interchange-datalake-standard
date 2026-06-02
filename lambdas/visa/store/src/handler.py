@@ -1,5 +1,5 @@
 """
-Lambda Store - itl-0004-itx-dev-intchg-02-lmbd-vi-store
+Lambda Store - itx-store
 ========================
 Último paso del pipeline antes del archive.
 Lee los 3 Parquets de staging (CLN + CAL + ITX) y los consolida

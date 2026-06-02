@@ -233,13 +233,16 @@ class Database:
         if where is None:
             where = {}
 
+        # cache_key includes fields so that two calls to the same table+where
+        # but requesting different columns don't share the same cache entry
+        # (which would cause reindex to return NaN for missing columns).
         cache_key = (
             table_name.strip().lower(),
+            tuple(sorted(fields)),
             tuple(sorted((str(k), str(v)) for k, v in where.items())),
         )
         if cache_key in self._cache:
-            cached = self._cache[cache_key]
-            return cached.reindex(columns=fields).copy()
+            return self._cache[cache_key].copy()
 
         log.logger.debug(
             f"DynamoDB read_records | table={table_name} | fields={fields} | where={where}"
@@ -368,17 +371,28 @@ class Database:
         return False
 
     def needs_interpreter_fix(self, client_id: str, file_id: str) -> bool:
+        log.logger.info(
+            f"[Search need_interpreter_fix value] client_id: {client_id} | file_id: {file_id}"
+        )
         df_cf = self.read_records(
             table_name="file_control",
             fields=["file_type", "brand_id", "landing_file_name"],
             where={"client_id": client_id, "file_id": file_id},
         )
-
+ 
+        log.logger.info(
+            f"[Search need_interpreter_fix value] client_id: {client_id} | file_id: {file_id} | len df: {len(df_cf)}"
+        )
+ 
         if df_cf.empty:
             return False
-
+ 
         file_type = str(df_cf.iloc[0]["file_type"] or "").strip().upper()
         raw_brand_id = str(df_cf.iloc[0]["brand_id"] or "").strip().upper()
+ 
+        log.logger.info(
+            f"[Search need_interpreter_fix value] client_id: {client_id} | file_id: {file_id} | len df: {len(df_cf)} | file_type = {file_type} | raw_brand_id : {raw_brand_id}"
+        )
         
         if raw_brand_id in ("VI", "VISA"):
             brand_id = "VISA"
@@ -390,18 +404,33 @@ class Database:
                 f"brand_id desconocido en file_control: "
                 f"client_id={client_id}, file_id={file_id}, brand_id={raw_brand_id}"
             )
+ 
+        log.logger.info(
+            f"[Search need_interpreter_fix value] client_id: {client_id} | file_id: {file_id} | len df: {len(df_cf)} | file_type = {file_type} | brand_id : {brand_id}"
+        )
         
         landing_file_name = str(df_cf.iloc[0]["landing_file_name"] or "").strip()
-
+ 
+        log.logger.info(
+            f"[Search need_interpreter_fix value] client_id: {client_id} | file_id: {file_id} | len df: {len(df_cf)} | file_type = {file_type} | brand_id : {brand_id} | landing_file_name: {landing_file_name}"
+        )
+ 
         df_rx = self.read_records(
             table_name="file_name_regex_param",
             fields=["file_format", "interpreter_fix"],
-            where={"customer_code": client_id, "brand": brand_id, "file_type": file_type},
+            where={"customer_code": client_id, "brand": brand_id},  # REMOVED: "file_type": file_type
         )
-
+ 
+        log.logger.info(
+            f"[Search need_interpreter_fix value] client_id: {client_id} | " 
+            f"file_id: {file_id} | len df: {len(df_cf)} | file_type = {file_type} | " 
+            f"brand_id : {brand_id} | landing_file_name: {landing_file_name} | "
+            f" len df_rx: {len(df_rx)}"
+        )
+ 
         if df_rx.empty:
             return False
-
+ 
         for _, row in df_rx.iterrows():
             pattern = str(row["file_format"]).strip()
             try:
@@ -1461,7 +1490,6 @@ def read_len_prefixed_messages(
             else:
                 row["bitmap"] = bitmap
                 row["body"]   = body
- 
         yield row
         pos = pos + 4 + msg_len
 
@@ -1778,6 +1806,7 @@ def _process_block(
     Se llama una vez por bloque, justo cuando se detecta el 695.
     """
     if not block_buffer:
+        log.logger.info(f"No hay block_buffer/vacio")
         return
  
     wide_rows = [
@@ -1904,6 +1933,7 @@ def interpretate_msg(
  
     for row in rows:
         row["function_code"] = _extract_function_code_inline(row=row, de_spec=DE_SPEC)
+        log.logger.info(f"row: {row}")
  
         mti      = row.get("mti")
         fc       = row.get("function_code")
@@ -2021,12 +2051,28 @@ def _normalize_event(event: Any) -> dict[str, Any]:
     return normalized
 
 
-def _extract_event_params(event: dict[str, Any]) -> tuple[str, str]:
+def _extract_event_params(
+    event: dict[str, Any]
+) -> tuple[str, str, str, str, str, str, str, str, str, str]:
     """
-    Extrae y valida los parámetros mínimos del interpreter Mastercard.
+    Extrae y valida los parámetros del evento.
+
+    Misma estructura de input que vi_transform.py para compatiblidad
+    con el payload que emite el router hacia Step Functions:
+
+        client_id, file_id, filename, s3_key_landing, bucket_landing,
+        brand, brand_id, file_type, file_date, content_hash
     """
     client_id = str(event.get("client_id", "")).strip()
     file_id = str(event.get("file_id", event.get("content_hash", ""))).strip()
+    brand = str(event.get("brand", "")).strip()
+    brand_id = str(event.get("brand_id", "")).strip()
+    file_type = str(event.get("file_type", "")).strip()
+    file_date = str(event.get("file_date")).strip()
+    content_hash = str(event.get("content_hash")).strip()
+    s3_key_landing = str(event.get("s3_key_landing")).strip()
+    bucket_landing = str(event.get("bucket_landing")).strip()
+    filename = str(event.get("filename")).strip()
  
     missing = []
     if not client_id:
@@ -2040,7 +2086,11 @@ def _extract_event_params(event: dict[str, Any]) -> tuple[str, str]:
             f"Event recibido: {json.dumps(event, default=str)}"
         )
  
-    return client_id, file_id
+    return (
+        client_id, file_id, brand, brand_id, 
+        file_type, file_date, content_hash, 
+        s3_key_landing, bucket_landing, filename
+    )
 
 
 def _pipeline_mc_interpreter(client_id: str, file_id: str) -> list[str]:
@@ -2057,15 +2107,79 @@ def _pipeline_mc_interpreter(client_id: str, file_id: str) -> list[str]:
     )
 
 
+# Captura el MTI de segmentos tipo "100_IPM_1240_RAW", "400_IPM_1644_CLN", etc.
+_MTI_FROM_KEY_RE = re.compile(r"/\d+_IPM_(\d{4})_\w+/")
+
+
+def _build_outputs_for_calculate(s3_urls: list[str]) -> list[dict]:
+    """
+    Transforma la lista de URLs S3 completas que produce _pipeline_mc_interpreter
+    en el array de objetos que consume mc_calculate como parámetro --outputs.
+ 
+    Input:
+        [
+            "s3://bucket/SBSA/MC/100_IPM_1240_RAW/file_type=IN/date=2026-02-18/xxx_1240.parquet",
+            ...
+        ]
+ 
+    Output:
+        [
+            {"mti": "1240", "s3_key": "SBSA/MC/100_IPM_1240_RAW/file_type=IN/date=2026-02-18/xxx_1240.parquet"},
+            ...
+        ]
+    """
+    result = []
+    for url in s3_urls:
+        # Quitar "s3://bucket/" para quedarse solo con el s3_key relativo
+        if url.startswith("s3://"):
+            without_scheme = url[5:]                    # "bucket/rest/of/key"
+            s3_key = without_scheme.split("/", 1)[1]    # "rest/of/key"
+        else:
+            s3_key = url
+ 
+        m = _MTI_FROM_KEY_RE.search(url)
+        mti = m.group(1) if m else "UNKNOWN"
+ 
+        result.append({"mti": mti, "s3_key": s3_key})
+ 
+    return result
+
+
 def lambda_handler(event, context):
     """
     Entry point de AWS Lambda.
  
-    Payload mínimo esperado:
-        {
-            "client_id": "EURBGR",
-            "file_id": "db7f1de4075536e2bae5d1d6a4f22c75"
-        }
+    Input (desde Step Functions) — mismo payload que emite el router:
+    {
+        "client_id":      "EURBGR",
+        "file_id":        "db7f1de4075536e2bae5d1d6a4f22c75",
+        "filename":       "MC.EURBGR.IPM.20260103.001",
+        "s3_key_landing": "EURBGR/MC.EURBGR.IPM.20260103.001",
+        "bucket_landing": "itx-landing-dev",
+        "brand":          "MASTERCARD",
+        "brand_id":       "MC",
+        "file_type":      "IN",
+        "file_date":      "2026-01-03",
+        "content_hash":   "db7f1de4075536e2bae5d1d6a4f22c75"
+    }
+ 
+    Output (para el siguiente paso en Step Functions):
+    {
+        "status":         "SUCCESS",
+        "total_outputs":  27,
+        "total_records":  0,
+        "outputs":        [{"mti": "1240", "s3_key": "SBSA/MC/100_IPM_1240_RAW/..."}, ...],
+        "client_id":      "EURBGR",
+        "file_id":        "db7f1de4...",
+        "brand":          "MASTERCARD",
+        "brand_id":       "MC",
+        "file_type":      "IN",
+        "file_date":      "2026-01-03",
+        "content_hash":   "db7f1de4...",
+        "s3_key_landing": "EURBGR/MC.EURBGR.IPM.20260103.001",
+        "bucket_landing": "itx-landing-dev",
+        "filename":       "MC.EURBGR.IPM.20260103.001"
+    }
     """
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
@@ -2075,54 +2189,68 @@ def lambda_handler(event, context):
     logger.info(f"Event recibido: {json.dumps(event, default=str)}")
  
     try:
-        client_id, file_id = _extract_event_params(event)
+        (
+            client_id, file_id, brand, brand_id, 
+            file_type, file_date, content_hash,
+            s3_key_landing, bucket_landing, filename,
+        ) = _extract_event_params(event)
     except ValueError as exc:
         logger.error(f"Payload inválido: {exc}")
         return {
-            "statusCode": 400,
-            "body": json.dumps({"message": str(exc)}, default=str),
+            "status":    "ERROR",
+            "error":     str(exc),
+            "client_id": event.get("client_id", ""),
+            "file_id":   event.get("file_id",   ""),
         }
  
     logger.info(
         f"Iniciando MC Interpreter | "
         f"client_id={client_id} | "
         f"file_id={file_id} | "
-        f"filename={event.get('filename', event.get('landing_file_name', 'N/A'))} | "
-        f"s3_key_landing={event.get('s3_key_landing', 'N/A')}"
+        f"filename={filename} | "
+        f"s3_key_landing={s3_key_landing}"
     )
  
     try:
         uploaded_outputs = _pipeline_mc_interpreter(client_id=client_id, file_id=file_id)
+        outputs          = _build_outputs_for_calculate(uploaded_outputs)
  
         logger.info(
             f"=== Pipeline Mastercard Interpreter completado exitosamente | "
-            f"outputs={len(uploaded_outputs)} ==="
+            f"outputs={len(outputs)} ==="
         )
+        logger.info(f"outputs para mc_calculate: {json.dumps(outputs)}")
  
         return {
-            "statusCode": 200,
-            "body": json.dumps(
-                {
-                    "message": "Pipeline Mastercard Interpreter completado exitosamente",
-                    "client_id": client_id,
-                    "file_id": file_id,
-                    "outputs_count": len(uploaded_outputs),
-                    "outputs": uploaded_outputs,
-                },
-                default=str,
-            ),
+            "status":         "SUCCESS" if outputs else "ERROR",
+            "total_outputs":  len(outputs),
+            "total_records":  0,
+            "outputs":        outputs,
+            "client_id":      client_id,
+            "file_id":        file_id,
+            "brand":          brand,
+            "brand_id":       brand_id,
+            "file_type":      file_type,
+            "file_date":      file_date,
+            "content_hash":   content_hash,
+            "s3_key_landing": s3_key_landing,
+            "bucket_landing": bucket_landing,
+            "filename":       filename,
         }
  
     except Exception as exc:
         logger.error(f"Error en pipeline Mastercard Interpreter: {exc}", exc_info=True)
         return {
-            "statusCode": 500,
-            "body": json.dumps(
-                {
-                    "message": f"Error: {str(exc)}",
-                    "client_id": client_id,
-                    "file_id": file_id,
-                },
-                default=str,
-            ),
+            "status":         "ERROR",
+            "error":          str(exc),
+            "client_id":      client_id,
+            "file_id":        file_id,
+            "brand":          brand,
+            "brand_id":       brand_id,
+            "file_type":      file_type,
+            "file_date":      file_date,
+            "content_hash":   content_hash,
+            "s3_key_landing": s3_key_landing,
+            "bucket_landing": bucket_landing,
+            "filename":       filename,
         }

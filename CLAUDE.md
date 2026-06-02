@@ -17,7 +17,7 @@ Este repositorio es la **migración a AWS** de un sistema de procesamiento de ar
 **Desarrollador:** Julio Cesar Cardenas Suca
 **Runtime:** Python 3.11
 **Región AWS:** eu-south-2 (cuenta de prueba)
-**Estado:** Pipeline Visa funcional. Mastercard en desarrollo: mc-transform, mc-iar, mc-interpreter, mc-extract, mc-clean y glue-mc-calculate tecnicamente listos pendientes de validacion (2026-05-26); mc-store y orquestador ASL pendientes.
+**Estado:** Pipeline Visa funcional. Mastercard: todos los componentes implementados (2026-06-02) — pendientes de validacion end-to-end y deploy del ASL actualizado.
 
 ---
 
@@ -33,7 +33,7 @@ lmbd-router
     ↓  (2) si ZIP → lmbd-unzip [async, no espera] → cada archivo extraído
     ↓       dispara el router nuevamente via S3 event → paralelismo gratis
     ↓  (3) clasifica via DynamoDB file_pattern (regex por prioridad)
-    ↓  (4) extrae fecha del header (solo primeros 50 bytes, sin descargar)
+    ↓  (4) extrae fecha del header: Visa → primeros 50 bytes; MC → chunks buscando trailer 1644/695
     ↓  (5) calcula MD5 en streaming → detecta duplicados en file_control
     ↓       mismo MD5        → SKIPPED (ya procesado)
     ↓       mismo nombre/distinto MD5 → nuevo file_id (nueva versión)
@@ -58,7 +58,7 @@ glue-{marca}-calculate      → calculo de fees por transaccion
     ↓
 glue-{marca}-interchange    → reporte consolidado de interchange
     ↓
-lmbd-{marca}-store          → Parquets finales → S3 Operational  [PENDIENTE]
+lmbd-{marca}-store          → Parquets finales → S3 Operational
     ↓
 lmbd-archive-file           → archiva el archivo original        → S3 Archive
     ↓
@@ -107,12 +107,12 @@ Se usa Glue (no Lambda) por la complejidad de las logicas y el volumen de datos.
 Asigna la tarifa de interchange correcta a cada transaccion evaluando condiciones y logicas de clasificacion. El resultado se contrasta contra los records VSS para el Data Quality — validar que la tarificacion propia coincida con lo que Visa liquido.
 Genera Parquet en `s3-staging/interchange/`.
 
-**6. Store** (`lmbd-vi-store`) — PENDIENTE
+**6. Store** (`lmbd-vi-store`)
 Une los tres Parquets clave en un solo archivo consolidado:
 - `clean` — campos originales normalizados
 - `calculate` — campos derivados
 - `interchange` — tarifas asignadas
-Mueve el Parquet final a `s3-operational`. Sin este paso no existe el archivo que Athena consultara via crawler.
+Escribe el Parquet final a `s3-operational`. Sin este paso no existe el archivo que Athena consultara via crawler.
 
 **7. Archive** (`lmbd-archive-file`)
 Mueve el archivo original del landing a `s3-archive`.
@@ -166,18 +166,16 @@ Equivalente funcional al clean de Visa.
 Calculo de campos derivados para la tarificacion MC sobre PySpark (Glue 4.0). Funciones principales: `calculate_pre2()` (range-join IAR con bucket-prefix), `calculate_ex_rate()` (tipos de cambio desde S3 Hive), `calculate_settlement_report()`, `calculate_final_fields()` (ensamble + jurisdiction_assigned), `build_lookup_691_spark()` + `apply_exclude_flag()`. Lee datos de referencia desde `s3-reference`: country, region, currency, mastercard_brand_product, mastercard_iar. Escribe a `staging/500_IPM_{MTI}_CAL/`.
 Equivalente funcional al calculate de Visa.
 
-**6. Interchange** (`glue-mc-interchange`) — en desarrollo
-Asignacion de tarifas IAR y Data Quality contra registros MTI 1644 (liquidacion MC).
-Equivalente funcional al interchange de Visa (que contrasta contra VSS).
+**6. Interchange** (`glue-mc-interchange`) — implementado, pendiente de validacion
+Asigna tarifas IAR a transacciones MTIs 1240 y 1442. Lee CLN + CAL + datos de referencia S3 (`currency/`, `exchange_rate/`, `mc_rules/`). Escribe a `staging/600_IPM_{MTI}_ITX/`.
+Nota: a diferencia de Visa, no contrasta contra MTI 1644 (liquidacion) — scope limitado a tarificacion transaccional en esta version.
 
-**7. Store** (`lmbd-mc-store`) — pendiente
-Une Parquets de clean + calculate + interchange → `s3-operational`.
+**7. Store** (`lmbd-mc-store`) — implementado, pendiente de validacion
+Consolida CLN + CAL + ITX (si existe) por MTI en un Parquet final y lo escribe a `s3-operational`. Merge horizontal por columnas nuevas (`axis=1`), garantizado por el orden de filas del pipeline.
+MTIs con ITX: 1240, 1442. MTIs sin ITX: 1644, 1740.
 
 **8. Archive** (`lmbd-archive-file`)
 Mueve el archivo original del landing a `s3-archive`.
-
-> Los pasos 3 al 7 estan siendo desarrollados por el equipo de Data Engineering de Intelica
-> en el marco de la refactorizacion del proceso local validado previamente.
 
 ---
 
@@ -193,7 +191,7 @@ interchange-datalake-aws/
 │   │   ├── transform/              # EBCDIC → Parquet (BASEII, SMS, VSS)
 │   │   ├── extract/                # Mapeo de campos segun DynamoDB
 │   │   ├── clean/                  # Validacion y limpieza
-│   │   ├── store/                  # Salida final [PENDIENTE]
+│   │   ├── store/                  # Salida final → S3 Operational
 │   │   ├── ardef/                  # Motor de reglas ARDEF (fees Visa)
 │   │   └── exchange-rates/         # Conversion de moneda
 │   └── mastercard/
@@ -307,7 +305,7 @@ Patron de nomenclatura: `itl-0004-itx-{env}-dynamo-{tabla}-02`
 | mc-iar | `itl-0004-itx-dev-intchg-02-lmbd-mc-iar` | — |
 | mc-extract | `itl-0004-itx-dev-intchg-02-lmbd-mc-extract` | ✓ |
 | mc-clean | `itl-0004-itx-dev-intchg-02-lmbd-mc-clean` | ✓ |
-| mc-store | `itl-0004-itx-dev-intchg-02-lmbd-mc-store` | — |
+| mc-store | `itl-0004-itx-dev-intchg-02-lmbd-mc-store` | ✓ |
 | mc-exchange-rates | `itl-0004-itx-dev-intchg-02-lmbd-mc-exchange-rates` | — |
 
 **Chunked processing:** los Lambdas de procesamiento dividen los archivos en chunks para no exceder el timeout:
@@ -330,6 +328,8 @@ Patron de nomenclatura: `itl-0004-itx-{env}-intchg-02-glue-{marca}-{job}`
 | `itl-0004-itx-dev-intchg-02-glue-mc-interchange` | MC | G.1X × 2 | Reporte consolidado interchange MC |
 
 Glue Version: 4.0
+
+Cada Glue job tiene un `args.json` junto a su script con los `DefaultArguments` usados en AWS (rutas S3, Spark conf, logging). Sirve como documentacion de los argumentos que Step Functions debe pasar al invocar el job.
 
 ---
 
@@ -408,16 +408,13 @@ terraform apply
 
 ## Pendientes conocidos
 
-**Mastercard — implementacion:**
-- `mc-extract`, `mc-clean`, `glue-mc-calculate`: implementados y desplegados en AWS (2026-05-26) — pendientes de validacion end-to-end
-- `mc-store`: pendiente de implementacion
-- `itx-mastercard-orchestrator`: ASL del Step Function pendiente (archivo actual es placeholder)
-
-**Mastercard — validacion:**
-- `mc-transform`, `mc-iar`, `mc-interpreter`, `mc-extract`, `mc-clean`, `glue-mc-calculate`: tecnicamente listos, pendientes de pruebas end-to-end en AWS
+**Mastercard — deploy y validacion (todos los componentes ya implementados):**
+- `mc-store`, `glue-mc-interchange`: implementados (2026-06-02) — pendientes de deploy en AWS y validacion end-to-end
+- `itx-mastercard-orchestrator`: ASL completo (2026-06-02) — pendiente de deploy en AWS
+- `mc-transform`, `mc-iar`, `mc-interpreter`, `mc-extract`, `mc-clean`, `glue-mc-calculate`: desplegados, pendientes de pruebas end-to-end
+- Gotchas de mc-transform (timeout multi-MTI, chunking, /tmp, var DDB) pendientes de resolver antes de validacion — ver `.claude/memory/gotchas.md`
 
 **General:**
-- `itx-store` Visa: implementacion de la salida final a S3 Operational
 - `itx-lambda-extract-role`: rol IAM propio para itx-extract (actualmente comparte el del router)
 - `itx-glue-crawler-ebgr-role`: rol IAM propio para el crawler Mastercard
 - Renombrar crawlers y databases Glue con prefijo `itx-` consistente

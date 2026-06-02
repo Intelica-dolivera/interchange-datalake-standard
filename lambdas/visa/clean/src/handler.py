@@ -1,7 +1,3 @@
-"""
-Lambda Clean - itl-0004-itx-dev-intchg-02-lmbd-vi-clean
-============================================
-"""
 import os
 import json
 import logging

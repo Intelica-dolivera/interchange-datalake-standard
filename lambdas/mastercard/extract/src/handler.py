@@ -49,11 +49,11 @@ log.setLevel(logging.INFO)
 
 S3 = boto3.client("s3")
 DYNAMO = boto3.client("dynamodb")
-
+ 
 S3_BUCKET = os.environ.get("S3_BUCKET")
-
+ 
 DYNAMO_TABLE_FILE_CONTROL = os.environ.get("DYNAMO_TABLE_FILE_CONTROL")
-
+ 
 # Stores DE/PDS field metadata and the extract column names.
 DYNAMO_TABLE_FIELDS = os.environ.get("DYNAMO_TABLE_FIELDS")
 
@@ -70,7 +70,7 @@ RENAME_COLS_1644 = {"MSG_NO": "ref_id", "MTI": "type_mti"}
 # PDS tags to extract from DE_48 per Function Code in MTI 1644.
 PDS_TAGS_BY_FC_1644: dict[str, set[int]] = {
     "685": {
-        148,
+        148, 
         165,
         300,
         302,
@@ -145,6 +145,9 @@ _FIRST_COLS = ["file_idn", "file_dt", "type_mti", "ref_id", "function_code"]
 _RE_DE = re.compile(r"(?<![a-z0-9])de_\d+(?:_\d+)*", re.IGNORECASE)
 _RE_PDS = re.compile(r"(?<![a-z0-9])pds_\d+(?:_\d+)*", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
+
+# Used by _build_outputs_for_stepfunction to extract the MTI from an S3 path.
+_MTI_FROM_KEY_RE = re.compile(r"/\d+_IPM_(\d{4})_\w+/")
 
 # ==============================================================================
 # DynamoDB field metadata — single scan, shared cache
@@ -806,6 +809,36 @@ EXTRACTS: dict[str, Any] = {
 }
 
 # ==============================================================================
+# Output builder — shared contract with mc_transform.py
+# ==============================================================================
+ 
+ 
+def _build_outputs_for_stepfunction(s3_urls: list[str]) -> list[dict]:
+    """
+    Convert the list of full S3 URLs written during extraction into the
+    structured array consumed by downstream Step Functions states.
+ 
+    Input:  ["s3://bucket/SBSA/MC/300_IPM_1240_EXT/file_type=IN/date=.../xxx.parquet", ...]
+    Output: [{"mti": "1240", "s3_key": "SBSA/MC/300_IPM_1240_EXT/file_type=IN/date=.../xxx.parquet"}, ...]
+ 
+    Mirrors mc_transform._build_outputs_for_stepfunction exactly.
+    """
+    result: list[dict] = []
+    for url in s3_urls:
+        if url.startswith("s3://"):
+            without_scheme = url[5:]                   # "bucket/rest/of/key"
+            s3_key = without_scheme.split("/", 1)[1]   # "rest/of/key"
+        else:
+            s3_key = url
+ 
+        m = _MTI_FROM_KEY_RE.search(url)
+        mti = m.group(1) if m else "UNKNOWN"
+ 
+        result.append({"mti": mti, "s3_key": s3_key})
+    return result
+
+
+# ==============================================================================
 # Lambda handler
 # ==============================================================================
 
@@ -813,73 +846,202 @@ EXTRACTS: dict[str, Any] = {
 def lambda_handler(event: dict, context: Any) -> dict:
     """
     AWS Lambda entry point for the Mastercard extraction stage.
-
-    Accepts the output of the upstream Lambda and runs the extract function for
-    each MTI in the event.
-
-    Input event (two accepted formats)
-    -----------------------------------
-    Wrapped (upstream Lambda output):
-        {"statusCode": 200, "body": "{\"client_id\": \"...\", \"file_id\": \"...\",
-          \"mtis_processed\": [\"1240\"]}"}
-
-    Unwrapped (direct invocation / Step Functions):
-        {"client_id": "...", "file_id": "...", "mtis_processed": ["1240"]}
+ 
+    Receives the full Step Functions state as the event payload
+    (``Payload.$: "$"``).  Identity fields (client_id, file_id, …) are
+    present at the event root level; the transform outputs that drive MTI
+    detection live under ``$.extract_input.outputs`` as a list of
+    ``{"mti": "...", "s3_key": "..."}`` objects — the same structure that
+    mc_transform.py produces and mc_interpreter.py produces before it.
+ 
+    Input event (flat, Step Functions contract)
+    -------------------------------------------
+    {
+        "client_id":    "SBSA",
+        "file_id":      "DD9D...",
+        "brand":        "MASTERCARD",
+        "brand_id":     "MC",
+        "file_type":    "IN",
+        "file_date":    "2026-02-18",
+        "content_hash": "...",
+        "filename":     "...",
+        "extract_inputs": {
+            "outputs": [
+                {"mti": "1240", "s3_key": "SBSA/MC/200_IPM_1240_TRA/…parquet"},
+                {"mti": "1644", "s3_key": "SBSA/MC/200_IPM_1644_TRA/…parquet"},
+                ...
+            ],
+            ...
+        },
+        ...
+    }
+ 
+    Return (flat dict — aligned with mc_transform.py contract)
+    ----------------------------------------------------------
+    {
+        "status":        "SUCCESS" | "ERROR",
+        "total_outputs": <int>,
+        "total_records": 0,
+        "outputs": [
+            {"mti": "1240", "s3_key": "SBSA/MC/300_IPM_1240_EXT/…parquet"},
+            {"mti": "1644", "s3_key": "SBSA/MC/300_IPM_1644_EXT/…parquet"},
+            ...
+        ],
+        "client_id":     "SBSA",
+        "file_id":       "DD9D...",
+        "brand":         "MASTERCARD",
+        "brand_id":      "MC",
+        "file_type":     "IN",
+        "file_date":     "2026-02-18",
+        "content_hash":  "...",
+        "filename":      "...",
+    }
     """
     log.info("REQUEST_ID=%s", context.aws_request_id)
     log.info("EVENT=%s", json.dumps(event))
 
-    # Unwrap the body if the event comes wrapped from an upstream Lambda.
-    # body: dict = (
-    #     json.loads(event["body"])
-    #     if isinstance(event.get("body"), str)
-    #     else event.get("body", event)
-    # )
-
-    client_id = "SBSA"  # body.get("client_id", "")
-    file_id = "DD9D5A19C372BC1AA0A2AE60BE0E3EBC"  # body.get("file_id", "")
-    mtis = ["1240", "1644", "1442", "1740"]  # body.get("mtis_processed", [])
-
+    # ------------------------------------------------------------------
+    # 1. Validate required environment variables
+    # ------------------------------------------------------------------
+    if not S3_BUCKET:
+        raise ValueError("Missing required environment variable: S3_BUCKET")
+    
+    # ------------------------------------------------------------------
+    # 2. Extract identity fields from event root
+    #    Mirrors mc_transform.py field extraction pattern exactly.
+    # ------------------------------------------------------------------
+    client_id    = event.get("client_id")
+    file_id      = event.get("file_id")
+    brand        = event.get("brand")
+    brand_id     = event.get("brand_id")
+    file_type    = event.get("file_type")
+    file_date    = event.get("file_date")
+    content_hash = event.get("content_hash")
+    filename     = event.get("filename")
+ 
     if not client_id or not file_id:
-        return {
-            "statusCode": 400,
-            "body": json.dumps(
-                {"error": "Missing required fields: client_id, file_id"}
-            ),
-        }
+        raise ValueError(
+            f"Missing required event fields: "
+            f"client_id={client_id!r}, file_id={file_id!r}"
+        )
+ 
+    log.info(
+        "Processing: client=%s, brand=%s, type=%s, date=%s, file_id=%s",
+        client_id, brand, file_type, file_date, file_id,
+    )
 
+    # ------------------------------------------------------------------
+    # 3. Derive MTIs from extract_input.outputs
+    #    Scans the 200_IPM_<MTI>_TRA paths produced by mc_transform,
+    #    mirroring how mc_transform derives MTIs from
+    #    interpreter_result.outputs by scanning 100_IPM_<MTI>_RAW.
+    # ------------------------------------------------------------------
+    extract_input = event.get("extract_input", {})
+    outputs = extract_input.get("outputs", [])
+ 
+    mtis: list[str] = []
+ 
+    if outputs:
+        mtis_from_outputs = list({
+            output["mti"]
+            for output in outputs
+            if output.get("mti") in EXTRACTS
+        })
+ 
+        if mtis_from_outputs:
+            log.info("MTIs derived from extract_input.outputs: %s", mtis_from_outputs)
+            mtis = mtis_from_outputs
+        else:
+            log.warning(
+                "Could not derive MTIs from extract_input.outputs; "
+                "falling back to all registered MTIs."
+            )
+            mtis = list(EXTRACTS.keys())
+    else:
+        log.info("extract_input.outputs is empty; using all registered MTIs.")
+        mtis = list(EXTRACTS.keys())
+ 
+    log.info("MTIs to process: %s", mtis)
+ 
     if not mtis:
-        return {
-            "statusCode": 400,
-            "body": json.dumps({"error": "Missing required field: mtis_processed"}),
-        }
+        raise ValueError(
+            f"No MTIs found to process: "
+            f"client_id={client_id}, file_id={file_id}"
+        )
+    
+    # ------------------------------------------------------------------
+    # 4. Build file_details from event fields
+    #    Avoids a redundant DynamoDB round-trip; all required fields are
+    #    already present in the event (brand_id, file_type, file_date).
+    # ------------------------------------------------------------------
+    file_details: dict = {
+        "brand_id":             brand_id or "",
+        "file_type":            file_type or "",
+        "file_processing_date": file_date or "",
+        "landing_file_name":    filename or "",
+    }
 
-    # Fetch file metadata once and reuse it for all MTIs.
-    file_details = _get_file_details(client_id, file_id)
-    log.info("file_details: %s", file_details)
-
+    # ------------------------------------------------------------------
+    # 5. Run extract pipeline per MTI
+    # ------------------------------------------------------------------
+    t_global = perf_counter()
     mtis_ok: list[str] = []
-
+ 
     for mti in mtis:
         extract_fn = EXTRACTS.get(mti)
         if extract_fn is None:
             log.warning("MTI %s has no registered extract function; skipping", mti)
             continue
-
+ 
         log.info("START extract_%s", mti)
         t = perf_counter()
         extract_fn(client_id=client_id, file_id=file_id, file_details=file_details)
         log.info("END extract_%s | time=%.2fs", mti, perf_counter() - t)
         mtis_ok.append(mti)
+ 
+    log.info(
+        "=== Done: %d MTIs processed | total time=%.2fs ===",
+        len(mtis_ok),
+        perf_counter() - t_global,
+    )
 
+    # ------------------------------------------------------------------
+    # 6. Collect real output paths written to 300_IPM_*_EXT
+    #    Mirrors mc_transform's output collection from 200_IPM_*_TRA.
+    # ------------------------------------------------------------------
+    uploaded_outputs: list[str] = []
+ 
+    for mti in mtis_ok:
+        output_subdir = f"300_IPM_{mti}_EXT"
+        prefix = _s3_prefix(client_id, output_subdir, file_details)
+        keys = _list_parquet_keys(prefix, file_id)
+        for key in keys:
+            uploaded_outputs.append(f"s3://{S3_BUCKET}/{key}")
+ 
+    log.info(
+        "Outputs collected: %d parquets across %d MTIs",
+        len(uploaded_outputs),
+        len(mtis_ok),
+    )
+ 
+    uploaded_outputs_json = _build_outputs_for_stepfunction(uploaded_outputs)
+
+    # ------------------------------------------------------------------
+    # 7. Return flat response — aligned with mc_transform.py contract
+    #    outputs is a list of {"mti": "...", "s3_key": "..."} objects,
+    #    matching the structure produced by mc_transform and mc_interpreter.
+    # ------------------------------------------------------------------
     return {
-        "statusCode": 200,
-        "body": json.dumps(
-            {
-                "message": "pipeline executed successfully",
-                "client_id": client_id,
-                "file_id": file_id,
-                "mtis_processed": mtis_ok,
-            }
-        ),
+        "status":        "SUCCESS" if uploaded_outputs else "ERROR",
+        "total_outputs": len(uploaded_outputs),
+        "total_records": 0,
+        "outputs":       uploaded_outputs_json,
+        "client_id":     client_id,
+        "file_id":       file_id,
+        "brand":         brand,
+        "brand_id":      brand_id,
+        "file_type":     file_type,
+        "file_date":     file_date,
+        "content_hash":  content_hash,
+        "filename":      filename,
     }

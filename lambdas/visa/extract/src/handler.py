@@ -1,5 +1,5 @@
 """
-Lambda Extract - itl-0004-itx-dev-intchg-02-lmbd-vi-extract
+Lambda Extract - itx-extract (Optimizado v2)
 ============================================
 Mejoras aplicadas vs versión anterior:
 

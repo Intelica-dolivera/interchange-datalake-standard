@@ -1,5 +1,5 @@
 """
-Lambda Archive - itl-0004-itx-dev-intchg-02-lmbd-archive-file
+Lambda Archive - itx-archive-file
 ==================================
 Mueve el archivo original de landing a operational/originals comprimido en ZIP.
 Se ejecuta SIEMPRE al final del pipeline — éxito o fallo.

@@ -1,8 +1,5 @@
 # =============================================================================
-# itl-0004-itx-dev-intchg-02-glue-vi-interchange (PySpark) - AWS Glue Job
-# =============================================================================
-# Calcula campos adicionales a partir de datos limpios (Clean)
-# Soporta: BASEII (drafts), SMS (messages), VSS (settlement 110/120/130/140)
+# ITX-INTERCHANGE (PySpark) - AWS Glue Job
 # =============================================================================
 
 import sys

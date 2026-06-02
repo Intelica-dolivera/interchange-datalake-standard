@@ -49,6 +49,7 @@ import re
 from datetime import datetime, date
 from typing import Optional
  
+import numpy as np
 import boto3
 import pandas as pd
  
@@ -63,11 +64,11 @@ from pyspark.sql.types import (
     StringType, LongType, DoubleType, DecimalType,
     DateType, IntegerType, StructType, StructField,
 )
-
+ 
 # =============================================================================
 # SCHEMA CLN — construido dinámicamente desde DynamoDB
 # =============================================================================
-
+ 
 # Campos de metadatos del pipeline (no existen en la tabla DynamoDB de campos).
 # Van siempre al principio del schema.
 _CLN_META_FIELDS = [
@@ -80,7 +81,7 @@ _CLN_META_FIELDS = [
     StructField("file_type",              StringType(), True),
     StructField("file_processing_date",   StringType(), True),
 ]
-
+ 
 _DECIMAL_SCALE_OVERRIDE: dict[str, tuple[int, int]] = {
     "conversion_rate_reconciliation_de_9":      (18, 9),
     "conversion_rate_cardholder_billing_de_10": (18, 9),
@@ -92,7 +93,7 @@ _DECIMAL_SCALE_OVERRIDE: dict[str, tuple[int, int]] = {
 
 # Campo especial: TIMESTAMP_NS no soportado en Spark 3.3 → siempre LongType.
 _TIMESTAMP_NS_AS_LONG = "date_and_time_local_transaction_de_12"
-
+ 
 def _dynamo_type_to_spark(col_name: str, data_type: str, float_decimals: str):
     """
     Convierte el data_type de DynamoDB al tipo PySpark correspondiente.
@@ -105,13 +106,13 @@ def _dynamo_type_to_spark(col_name: str, data_type: str, float_decimals: str):
       - 'string'    → StringType
     """
     dt = data_type.strip().lower()
-
+ 
     if col_name == _TIMESTAMP_NS_AS_LONG:
         return LongType()  # TIMESTAMP_NS → LongType (hardcodeado)
-
+ 
     if dt == "timestamp":
         return LongType()  # cualquier otro timestamp también → LongType por seguridad
-
+ 
     if dt == "decimal":
         if col_name in _DECIMAL_SCALE_OVERRIDE:
             p, s = _DECIMAL_SCALE_OVERRIDE[col_name]
@@ -123,12 +124,12 @@ def _dynamo_type_to_spark(col_name: str, data_type: str, float_decimals: str):
         except (ValueError, AttributeError):
             pass
         return DecimalType(18, 4)  # fallback genérico
-
+ 
     if dt == "int64":    return LongType()
     if dt == "date":     return DateType()
     if dt in ("string", "time"):
         return StringType()
-
+ 
     # Tipo desconocido → StringType con warning
     return StringType()
 
@@ -136,20 +137,20 @@ def build_cln_schema_from_dynamodb(dynamo_table_fields: str, mti: str) -> Struct
     """
     Consulta la tabla DynamoDB de campos Mastercard y construye el StructType
     para leer los parquets CLN del MTI indicado.
-
+ 
     - Los campos de metadatos del pipeline van hardcodeados al inicio.
     - 'date_and_time_local_transaction_de_12' siempre se mapea a LongType.
     - El campo 'date' (partición Hive) se añade al final hardcodeado.
-
+ 
     Args:
         dynamo_table_fields: nombre de la tabla DynamoDB (ej: itl-0004-...-mastercard_fields-02)
         mti: '1240' o '1442'
     """
     log_info(f"  Building CLN schema from DynamoDB table: {dynamo_table_fields} (MTI={mti})")
-
+ 
     dynamodb = boto3.resource("dynamodb")
     table    = dynamodb.Table(dynamo_table_fields)
-
+ 
     from boto3.dynamodb.conditions import Attr
     response = table.scan(
         FilterExpression=Attr("type_mti").contains(mti)
@@ -161,12 +162,12 @@ def build_cln_schema_from_dynamodb(dynamo_table_fields: str, mti: str) -> Struct
             ExclusiveStartKey=response["LastEvaluatedKey"],
         )
         items.extend(response.get("Items", []))
-
+ 
     log_info(f"  DynamoDB returned {len(items)} field definitions for MTI {mti}")
-
+ 
     # Metadata fields primero (no están en DynamoDB)
     fields: list[StructField] = list(_CLN_META_FIELDS)
-
+ 
     # Campos del dominio desde DynamoDB — orden no importa, Spark hace match por nombre
     for item in items:
         col   = item.get("column_name", "").strip()
@@ -174,10 +175,10 @@ def build_cln_schema_from_dynamodb(dynamo_table_fields: str, mti: str) -> Struct
         scale = str(item.get("float_decimals", ""))
         if col:
             fields.append(StructField(col, _dynamo_type_to_spark(col, dtype, scale), True))
-
+ 
     # Campo 'date' de partición Hive — siempre al final
     fields.append(StructField("date", DateType(), True))
-
+ 
     log_info(f"  CLN schema built: {len(fields)} fields")
     return StructType(fields)
  
@@ -221,7 +222,7 @@ def log_error(msg: str) -> None: _glue_logger.error(f"[MC-CALC] ERROR — {msg}"
 # =============================================================================
 # 3. S3 PATH HELPERS
 # =============================================================================
-
+ 
 def _parse_s3_url(s3_url: str) -> tuple[str, str]:
     """
     Normaliza una URL S3.
@@ -235,8 +236,8 @@ def _parse_s3_url(s3_url: str) -> tuple[str, str]:
     bucket = parts[0]
     prefix = parts[1].strip("/") if len(parts) > 1 else ""
     return bucket, prefix
-
-
+ 
+ 
 def _s3_url(base: str, *parts: str) -> str:
     """
     Une partes en una URL S3 completa.
@@ -263,7 +264,7 @@ def list_s3_parquets(bucket: str, prefix: str) -> list[str]:
 # =============================================================================
 # 4. DYNAMODB HELPERS
 # =============================================================================
-
+ 
 def get_client_data(client_id: str, dynamo_table_name: str) -> dict:
     """
     Lee los datos del cliente desde DynamoDB.
@@ -298,7 +299,7 @@ def get_client_data(client_id: str, dynamo_table_name: str) -> dict:
 # =============================================================================
 # 5. REFERENCE DATA LOADERS  (S3 → Spark DataFrame)
 # =============================================================================
-
+ 
 def _load_parquet(path: str) -> DataFrame:
     """Lee un parquet desde S3 y logea el path."""
     log_info(f"  Reading: {path}")
@@ -390,7 +391,7 @@ def _load_brand_product_raw(s3_reference_url: str) -> DataFrame:
 # =============================================================================
 # 6. DATE HELPERS
 # =============================================================================
-
+ 
 def _parse_file_date(file_date_str: str) -> date:
     """
     Parsea file_date desde 'YYYY-MM-DD', 'YYYYMMDD' o 'YYMMDD'.
@@ -418,7 +419,7 @@ def _to_rate_date(file_date_str: str) -> str:
 # =============================================================================
 # 7. IAR PREPARATION  (replica calculate_iar_unique de mc_calculate.py)
 # =============================================================================
-
+ 
 def prepare_iar(s3_reference_url: str, file_date_str: str) -> DataFrame:
     """
     Prepara la maestra IAR filtrada y deduplicada para una fecha de archivo.
@@ -548,15 +549,26 @@ def prepare_iar(s3_reference_url: str, file_date_str: str) -> DataFrame:
     # Requisitos para Arrow:
     #   - Columnas numéricas deben ser int64 / Int64 (nullable) — no float64 con NaN
     #   - Columnas string deben ser object con None (no np.nan) para mapear a null en Arrow
+    # NOTA: la nueva maestra historic_data.parquet almacena low_range / high_range como
+    # VARCHAR, por lo que tras pd.to_numeric los valores quedan en float64 con posibles
+    # NaN. El cast directo float64 → Int64 falla con la regla 'safe' de numpy
+    # (TypeError: cannot safely cast non-equivalent float64 to int64).
+    # Solución: construir el IntegerArray nullable manualmente vía numpy, evitando
+    # la ruta _safe_cast de pandas.
     for num_col in ("low_key_for_range", "high_key_for_range"):
-        df[num_col] = pd.to_numeric(df[num_col], errors="coerce").astype("Int64")
-
+        _s    = pd.to_numeric(df[num_col], errors="coerce")
+        _mask = _s.isna().to_numpy()
+        _ints = np.where(_mask, 0, np.round(_s.to_numpy())).astype(np.int64)
+        df[num_col] = pd.arrays.IntegerArray(_ints, mask=_mask)
+ 
+    log_info(f"Cast low_key_for_range and high_key_for_range: Ok")
+ 
     str_cols = ["app_date_valid", "iar_country", "gcms_product_identifier",
                 "funding_source", "card_program_identifier"]
     
     for sc in str_cols:
         df[sc] = df[sc].where(df[sc].notna(), other=None)
-
+ 
     _IAR_SCHEMA = StructType([
         StructField("app_date_valid",          StringType(), True),
         StructField("low_key_for_range",       LongType(),   True),
@@ -566,7 +578,7 @@ def prepare_iar(s3_reference_url: str, file_date_str: str) -> DataFrame:
         StructField("funding_source",          StringType(), True),
         StructField("card_program_identifier", StringType(), True),
     ])
-
+ 
     iar_spark = spark.createDataFrame(df, schema=_IAR_SCHEMA)
     iar_spark = iar_spark.cache()
     log_info(f"  IAR Spark DataFrame cached ({iar_spark.count():,} rows)")
@@ -576,7 +588,7 @@ def prepare_iar(s3_reference_url: str, file_date_str: str) -> DataFrame:
 # =============================================================================
 # 8. CALCULATE PRE2  (PASOS 2 + 3 + 4)
 # =============================================================================
-
+ 
 def calculate_pre2(
     df_cln: DataFrame,
     df_iar: DataFrame,
@@ -603,7 +615,7 @@ def calculate_pre2(
         - EXPLODE IAR en [prefix_low, prefix_high] → equi-join + filtro de rango
     """
     log_info(f"[calculate_pre2] file_id={file_id}")
-
+ 
     # ── Client BINs ───────────────────────────────────────────────────────────
     def _split_bins(val: str) -> list[str]:
         return [b.strip() for b in str(val).split(",") if b.strip()]
@@ -611,7 +623,7 @@ def calculate_pre2(
     issuing_bins_6 = _split_bins(client_data.get("issuing_bins_6_digits", ""))
     issuing_bins_8 = _split_bins(client_data.get("issuing_bins_8_digits", ""))
     acquiring_bins = _split_bins(client_data.get("acquiring_bins", ""))
-
+ 
     # ── PASO 2: campos base del CLN ───────────────────────────────────────────
     df = df_cln.select(
         F.col("ref_id"),
@@ -626,7 +638,7 @@ def calculate_pre2(
         F.col("date_and_time_local_transaction_de_12").alias("purchase_date"),
         F.col("card_acceptor_country_code_de_43_6").cast(StringType()).alias("card_purchase_country"),
     )
-
+ 
     # acquirer_bin: chars 2-7 de acq_ref (1-indexed substr, 6 chars desde posición 2)
     df = df.withColumn("acquirer_bin",   F.substring(F.col("acq_ref"), 2, 6))
  
@@ -653,7 +665,7 @@ def calculate_pre2(
     # join_prefix (transacción) = pan_prefix9 // 10^6  (primeros 3 dígitos del prefix de 9)
     _pow6 = F.lit(1_000_000).cast(LongType())
     df = df.withColumn("join_prefix", (F.col("pan_prefix9_long") / _pow6).cast(LongType()))
-
+ 
      # ── PASO 3: Preparar IAR con bucket-prefix → range join eficiente ─────────
     # prefix de 18-digit number = floor(value / 10^15)
     _pow15 = F.lit(10 ** 15).cast(LongType())
@@ -666,7 +678,7 @@ def calculate_pre2(
         # Explode: una fila por cada prefijo que abarca el rango IAR
         .withColumn("join_prefix",   F.explode(F.sequence(F.col("prefix_low"), F.col("prefix_high"))))
     )
-
+ 
     # ── Range join (equi-join en prefix + filtro de rango) ────────────────────
     # Condición: num_card_low <= high_key AND num_card_high >= low_key
     df_joined = df.join(
@@ -678,13 +690,13 @@ def calculate_pre2(
         ],
         how="left",
     )
-
+ 
     # Limpiar columnas temporales del join
     df_joined = df_joined.drop(
         "join_prefix", "prefix_low", "prefix_high",
         "pan_prefix9_long", "low_key_long", "high_key_long", "pan",
     )
-
+ 
     # ── JOIN country (card_purchase_country → acquirer country = ac) ──────────
     country_ac = country_df.select(
         F.col("country_code_alternative").alias("_ac_cc_alt"),
@@ -717,7 +729,7 @@ def calculate_pre2(
     df_joined = df_joined.withColumn(
         "jurisdiction_region", F.col("region_code").cast(StringType())
     )
-
+ 
     # ── business_mode ─────────────────────────────────────────────────────────
     df_joined = df_joined.withColumn(
         "business_mode",
@@ -725,7 +737,7 @@ def calculate_pre2(
          .when(F.col("file_type") == "OUT", F.lit("acquiring"))
          .otherwise(F.col("file_type").cast(StringType())),
     )
-
+ 
     # ── jurisdiction ──────────────────────────────────────────────────────────
     same_country    = F.col("card_purchase_country") == F.col("iar_country")
     collection_flag = (
@@ -748,7 +760,7 @@ def calculate_pre2(
          .when(inter,                F.lit("interregional"))
          .otherwise(F.lit(None).cast(StringType())),
     )
-
+ 
     # ── PASO 4: row_number → tomar n=1 ────────────────────────────────────────
     w = (
         Window
@@ -793,7 +805,7 @@ def calculate_ex_rate(
  
     local_ccy      = str(client_data.get("local_currency_code",      "")).strip().upper()
     settlement_ccy = str(client_data.get("settlement_currency_code", "")).strip().upper()
-
+ 
     # ── Campos del CLN ────────────────────────────────────────────────────────
     df = df_cln.select(
         F.col("ref_id"),
@@ -807,7 +819,7 @@ def calculate_ex_rate(
         F.col("currency_code_transaction_de_49").cast(LongType()).alias("currency_code_transaction"),
         F.col("currency_code_reconciliation_de_50").cast(LongType()).alias("currency_code_reconciliation"),
     )
-
+ 
     # ── proc_date desde file_dt ───────────────────────────────────────────────
     _fdt_str = F.col("file_dt").cast(StringType())
     df = df.withColumn(
@@ -816,7 +828,7 @@ def calculate_ex_rate(
          .when(F.length(_fdt_str) == 8, F.to_date(_fdt_str, "yyyyMMdd"))
          .otherwise(F.to_date(_fdt_str)),
     )
-
+ 
     # ── Numeric codes para settlement y local (desde currency lookup) ─────────
     def _resolve_currency_numeric(alpha_code: str) -> Optional[int]:
         if not alpha_code:
@@ -832,7 +844,7 @@ def calculate_ex_rate(
             return int(row[0]["currency_numeric_code"])
         log_warn(f"  Currency numeric code not found for: {alpha_code!r}")
         return None
-
+ 
     settlement_numeric = _resolve_currency_numeric(settlement_ccy)
     local_numeric      = _resolve_currency_numeric(local_ccy)
  
@@ -866,7 +878,7 @@ def calculate_ex_rate(
         F.col("currency_from_code").cast(LongType()).alias("_loc_from"),
         F.col("exchange_value").alias("_ev_local"),
     )
-
+ 
     # ── JOINs exchange rate ───────────────────────────────────────────────────
     df = df.join(
         F.broadcast(ex_set),
@@ -885,7 +897,7 @@ def calculate_ex_rate(
         ),
         how="left",
     ).drop("_loc_date", "_loc_from")
-
+ 
     # ── exchange_value_settlement: 1 si misma moneda, else lookup ─────────────
     df = df.withColumn(
         "exchange_value_settlement",
@@ -911,7 +923,7 @@ def calculate_ex_rate(
 # =============================================================================
 # 10. CALCULATE SETTLEMENT REPORT  (PASO 7)
 # =============================================================================
-
+ 
 def calculate_settlement_report(
     df_ex_rate: DataFrame,
     df_pre2: DataFrame,
@@ -951,13 +963,13 @@ def calculate_settlement_report(
         F.col("file_id").alias("_p_file_id"),
         F.col("jurisdiction"),
     )
-
+ 
     # currency para reconciliation (cur_rec)
     cur_rec = currency_df.select(
         F.col("currency_numeric_code").cast(LongType()).alias("_rec_numeric"),
         F.col("currency_alphabetic_code").cast(StringType()).alias("_rec_alpha"),
     )
-
+ 
     # ── JOINs ─────────────────────────────────────────────────────────────────
     df = df_ex.join(
         df_pre2_n1,
@@ -973,7 +985,7 @@ def calculate_settlement_report(
         on=(df["currency_code_reconciliation"].cast(LongType()) == cur_rec["_rec_numeric"]),
         how="left",
     ).drop("_rec_numeric")
-
+ 
     # ── settlement_report_currency_code ───────────────────────────────────────
     is_local_jur = F.col("jurisdiction").isin("on-us", "off-us")
     same_ccy_num = (
@@ -989,7 +1001,7 @@ def calculate_settlement_report(
               .otherwise(F.col("settlement_currency_code"))
          ),
     ).drop("_rec_alpha")
-
+ 
     # ── settlement_report_amount ──────────────────────────────────────────────
     amt_trx = F.col("amount_transaction").cast(DecimalType(38, 4))
     ev_set  = F.col("exchange_value_settlement").cast(DecimalType(38, 10))
@@ -1022,12 +1034,12 @@ def calculate_settlement_report(
     )
     log_info(f"  [calculate_settlement_report] rows={result.count():,}")
     return result
-
-
+ 
+ 
 # =============================================================================
 # 11. CALCULATE FINAL FIELDS
 # =============================================================================
-
+ 
 def calculate_final_fields(
     df_cln: DataFrame,
     df_pre2: DataFrame,
@@ -1053,7 +1065,7 @@ def calculate_final_fields(
     Output cast a los tipos del layout CALCULATE_FIELDS_FINAL.
     """
     log_info(f"[calculate_final_fields] file_id={file_id}")
-
+ 
     # ── Base desde CLN ────────────────────────────────────────────────────────
     df = df_cln.select(
         "ref_id", "file_id", "file_idn", "file_type", "type_mti", "file_dt"
@@ -1079,7 +1091,7 @@ def calculate_final_fields(
         ),
         how="inner",
     ).drop("_p_ref_id", "_p_file_id", "_p_file_idn")
-
+ 
     # ── amount: solo columnas necesarias, renombradas ─────────────────────────
     df_amount_sel = df_amount.select(
         F.col("ref_id").alias("_a_ref_id"),
@@ -1096,7 +1108,7 @@ def calculate_final_fields(
         ),
         how="left",
     ).drop("_a_ref_id", "_a_file_id")
-
+ 
     # ── jurisdiction_assigned ─────────────────────────────────────────────────
     # intraregional → jurisdiction_region (string del region_code)
     # interregional → '9'
@@ -1107,7 +1119,7 @@ def calculate_final_fields(
          .when(F.col("jurisdiction") == "interregional", F.lit("9"))
          .otherwise(F.col("jurisdiction_country")),
     )
-
+ 
     # ── Cast final según CALCULATE_FIELDS_FINAL ───────────────────────────────
     result = df.select(
         F.col("file_id").cast(StringType()),
@@ -1137,16 +1149,21 @@ def calculate_final_fields(
 # =============================================================================
 # 12. EXCLUDE FLAG  (replica build_lookup_691 + add_exclude_flag)
 # =============================================================================
-
+ 
 def build_lookup_691_spark(
     staging_s3_url: str,
-    s3_key_1644_cln: str,
+    file_paths_1644: list,
 ) -> DataFrame:
     """
     Replica build_lookup_691() para S3/Spark.
  
-    Lee los parquets cuyo nombre termina en '_691.parquet' del folder
-    400_IPM_1644_CLN y retorna un DF con (file_idn, source_msg_number).
+    Recibe la lista de paths completos de archivos 1644_CLN individuales
+    (proveniente del campo outputs donde mti=="1644") y filtra los que
+    terminan en '_691.parquet' para construir el lookup de exclusión.
+ 
+    Cada entrada en file_paths_1644 es un s3_key relativo tal como viene
+    del outputs array:  "SBSA/MC/400_IPM_1644_CLN/file_type=IN/date=.../file_691.parquet"
+    Se construye el path completo anteponiendo staging_s3_url.
  
     La columna 'file_idn' se extrae del nombre del archivo con
     input_file_name() — replica extract_file_identification() del original.
@@ -1158,29 +1175,26 @@ def build_lookup_691_spark(
         StructField("source_msg_number", StringType(), True),
     ])
  
-    log_info(f"[build_lookup_691_spark] 1644_cln prefix: {s3_key_1644_cln}")
+    log_info(f"[build_lookup_691_spark] 1644 files received: {len(file_paths_1644)}")
  
-    bucket, prefix_base = _parse_s3_url(staging_s3_url)
-    full_prefix = (
-        f"{prefix_base}/{s3_key_1644_cln.strip('/')}" if prefix_base
-        else s3_key_1644_cln.strip("/")
-    )
- 
-    all_keys      = list_s3_parquets(bucket, full_prefix)
-    fc_691_keys   = [k for k in all_keys if re.search(r"_691\.parquet$", k, re.IGNORECASE)]
+    # Filtrar solo los archivos cuyo nombre termina en _691.parquet
+    fc_691_keys = [
+        k for k in file_paths_1644
+        if re.search(r"_691\.parquet$", k, re.IGNORECASE)
+    ]
  
     if not fc_691_keys:
         log_info("  No 691 parquets found — returning empty lookup.")
         return spark.createDataFrame([], _empty_schema)
  
-    # Mismo patrón que process_mti (~línea 1326): path completo compatible
-    # con S3 en Glue y filesystem local en el test runner.
-    if staging_s3_url.startswith("s3://") or staging_s3_url.startswith("s3a://"):
-            fc_691_paths = [f"s3://{bucket}/{k}" for k in fc_691_keys]
+    # Construir paths completos s3:// a partir de staging_s3_url + s3_key relativo
+    staging_base = staging_s3_url.rstrip("/")
+    if staging_base.startswith("s3://") or staging_base.startswith("s3a://"):
+        fc_691_paths = [f"{staging_base}/{k.lstrip('/')}" for k in fc_691_keys]
     else:
-        fc_691_paths = [f"{staging_s3_url.rstrip('/')}/{k.lstrip('/')}" for k in fc_691_keys]
+        fc_691_paths = [f"{staging_base}/{k.lstrip('/')}" for k in fc_691_keys]
     log_info(f"  Found {len(fc_691_paths)} 691 parquet(s)")
-
+ 
     df_691 = spark.read.option("mergeSchema", "false").parquet(*fc_691_paths) #TESTING df_691 = spark.read.parquet(*fc_691_paths)
  
     # Extraer file_idn del nombre del archivo:
@@ -1203,8 +1217,8 @@ def build_lookup_691_spark(
     result = result.cache()
     log_info(f"  Lookup 691 cached ({result.count():,} entries)")
     return result
-
-
+ 
+ 
 def build_exclude_keys(
     df_cln: DataFrame,
     df_lookup_691: DataFrame,
@@ -1255,8 +1269,8 @@ def build_exclude_keys(
     )
  
     return df_exclude_keys
-
-
+ 
+ 
 def apply_exclude_flag(
     df_final: DataFrame,
     df_exclude_keys: DataFrame,
@@ -1294,12 +1308,12 @@ def apply_exclude_flag(
     ).drop("_exclude")
  
     return df_out
-
-
+ 
+ 
 # =============================================================================
 # 13. I/O HELPERS
 # =============================================================================
-
+ 
 def load_parquet_safe(path: str, schema=None) -> DataFrame:
     """Carga un folder/archivo Parquet desde S3.
     Si se pasa schema, evita la inferencia del footer (necesario para TIMESTAMP_NS).
@@ -1312,8 +1326,8 @@ def load_parquet_safe(path: str, schema=None) -> DataFrame:
     count = df.count()
     log_info(f"  Loaded {count:,} records")
     return df
-
-
+ 
+ 
 def save_parquet(df: DataFrame, path: str) -> None:
     """
     Guarda DataFrame como un único archivo Parquet con el path exacto indicado.
@@ -1342,7 +1356,7 @@ def save_parquet(df: DataFrame, path: str) -> None:
     for col in pdf.columns:
         if str(pdf[col].dtype).startswith("datetime64"):
             pdf[col] = pdf[col].astype("datetime64[us]")
-
+ 
     table = pa.Table.from_pandas(pdf, preserve_index=False)
     pq.write_table(
         table,
@@ -1352,8 +1366,8 @@ def save_parquet(df: DataFrame, path: str) -> None:
         allow_truncated_timestamps=True,
     )
     log_info(f"  Saved to: {path} ({len(pdf):,} rows)")
-
-
+ 
+ 
 def build_output_file_path(input_file_path: str) -> str:
     """
     Deriva el path completo del archivo CAL a partir del path completo del CLN.
@@ -1364,14 +1378,18 @@ def build_output_file_path(input_file_path: str) -> str:
  
       …/400_IPM_1442_CLN/file_type=IN/date=2026-02-18/074b…_151_1442.parquet
       → …/500_IPM_1442_CAL/file_type=IN/date=2026-02-18/074b…_151_1442.parquet
+ 
+      …/400_IPM_1740_CLN/file_type=IN/date=2026-02-18/074b…_171_1740.parquet
+      → …/500_IPM_1740_CAL/file_type=IN/date=2026-02-18/074b…_171_1740.parquet
     """
     return (
         input_file_path
         .replace("400_IPM_1240_CLN", "500_IPM_1240_CAL")
         .replace("400_IPM_1442_CLN", "500_IPM_1442_CAL")
+        .replace("400_IPM_1740_CLN", "500_IPM_1740_CAL")
     )
-
-
+ 
+ 
 def build_output_path(input_s3_key: str) -> str:
     """
     Deriva el path de la CARPETA CAL a partir de la carpeta CLN.
@@ -1388,10 +1406,10 @@ def build_output_path(input_s3_key: str) -> str:
 
 
 # =============================================================================
-# 14. PROCESS MTI
+# 14. PROCESS FILE  (un archivo parquet individual)
 # =============================================================================
-
-def process_mti(
+ 
+def process_file(
     mti: str,
     input_s3_key: str,
     staging_s3_url: str,
@@ -1403,155 +1421,119 @@ def process_mti(
     currency_df: DataFrame,
     df_ex: DataFrame,
     df_lookup_691: DataFrame,
-    cln_schema =None,
+    cln_schema=None,
 ) -> dict:
     """
-    Procesa un MTI completo (1240 ó 1442), archivo por archivo.
+    Procesa un único archivo parquet CLN y produce su correspondiente CAL.
  
-    ARQUITECTURA (replica mc_calculate.py):
-      - Lista todos los .parquet del folder CLN (input_s3_key).
-      - Por cada archivo:
-          1. Lee el parquet individualmente (sin activar detección Hive).
-          2. Ejecuta el pipeline completo (pre2 → ex_rate → settlement → final → exclude).
-          3. Escribe 1 parquet de salida con el MISMO NOMBRE en la carpeta CAL.
-      - Las maestras (IAR, country, currency, ex_rate) se reciben ya cacheadas
-        y se reúsan en cada iteración sin recargarse.
+    ARQUITECTURA:
+      - Recibe el s3_key relativo de un archivo parquet específico
+        (ej: "SBSA/MC/400_IPM_1240_CLN/file_type=IN/date=2026-02-18/074b…_1240.parquet")
+      - Construye el path completo anteponiendo staging_s3_url.
+      - Ejecuta el pipeline completo (pre2 → ex_rate → settlement → final → exclude).
+      - Escribe 1 parquet de salida con el mismo nombre en la carpeta CAL.
+      - Las maestras (IAR, country, currency, ex_rate) se reciben ya cacheadas.
  
-    Esto garantiza N inputs → N outputs, preservando la granularidad por file_idn.
+    Cada entrada del array outputs del Step Function produce exactamente
+    un archivo CAL de salida — N inputs → N outputs.
     """
     log_info("")
     log_info("=" * 60)
-    log_info(f"Processing MTI {mti}")
+    log_info(f"Processing file — MTI {mti}")
     log_info("=" * 60)
  
-    staging_base    = staging_s3_url.rstrip("/")
-    input_folder    = f"{staging_base}/{input_s3_key.strip('/')}"
-    output_folder   = f"{staging_base}/{build_output_path(input_s3_key).strip('/')}"
+    staging_base = staging_s3_url.rstrip("/")
  
-    log_info(f"  Input folder:  {input_folder}")
-    log_info(f"  Output folder: {output_folder}")
+    # Construir path completo del archivo de entrada
+    input_file_path = f"{staging_base}/{input_s3_key.lstrip('/')}"
  
-    # ── Listar todos los archivos CLN de la carpeta ───────────────────────────
-    bucket, prefix = _parse_s3_url(input_folder)
-    all_keys = list_s3_parquets(bucket, prefix)
+    # Derivar path del archivo de salida (CLN → CAL)
+    output_file_path = build_output_file_path(input_file_path)
  
-    if not all_keys:
-        log_warn(f"  No parquets found in {input_folder} — skipping MTI {mti}")
+    filename = input_s3_key.rsplit("/", 1)[-1]
+ 
+    log_info(f"  Input file:  {input_file_path}")
+    log_info(f"  Output file: {output_file_path}")
+    log_info(f"  Filename:    {filename}")
+ 
+    df_cln   = None
+    df_pre2  = None
+    df_er    = None
+    df_amt   = None
+    df_final = None
+ 
+    try:
+        # 1. Leer este parquet individual (sin detección Hive)
+        df_cln  = load_parquet_safe(input_file_path, schema=cln_schema).cache()
+ 
+        # 2. Pre2 (PASOS 2+3+4)
+        df_pre2 = calculate_pre2(
+            df_cln=df_cln,
+            df_iar=df_iar,
+            country_df=country_df,
+            region_df=region_df,
+            client_data=client_data,
+            file_id=file_id,
+        ).cache()
+ 
+        # 3. Exchange Rate (PASO 5)
+        df_er = calculate_ex_rate(
+            df_cln=df_cln,
+            client_data=client_data,
+            currency_df=currency_df,
+            df_ex=df_ex,
+            file_id=file_id,
+            brand="Mastercard",
+        ).cache()
+ 
+        # 4. Settlement Report (PASO 7)
+        df_amt = calculate_settlement_report(
+            df_ex_rate=df_er,
+            df_pre2=df_pre2,
+            currency_df=currency_df,
+        ).cache()
+ 
+        # 5. Final Fields
+        df_final_raw = calculate_final_fields(
+            df_cln=df_cln,
+            df_pre2=df_pre2,
+            df_amount=df_amt,
+            client_id=client_data["client_id"],
+            file_id=file_id,
+        )
+ 
+        # 6. Exclude Flag
+        df_exclude_keys = build_exclude_keys(df_cln, df_lookup_691)
+        df_final = apply_exclude_flag(df_final_raw, df_exclude_keys).cache()
+ 
+        # 7. Escribir con el mismo nombre de archivo que el input
+        record_count = df_final.count()
+        save_parquet(df_final, output_file_path)
+ 
+        log_info(f"    ✓ {filename}: {record_count:,} records → {output_file_path}")
+ 
         return {
-            "status":        "SKIPPED",
+            "status":        "SUCCESS",
             "mti":           mti,
-            "input_folder":  input_folder,
-            "output_folder": output_folder,
-            "files":         0,
-            "records":       0,
+            "input_file":    input_file_path,
+            "output_file":   output_file_path,
+            "s3_key":        build_output_file_path(input_s3_key),
+            "records":       record_count,
         }
  
-    log_info(f"  Found {len(all_keys)} parquet file(s) to process")
- 
-    total_records   = 0
-    processed_files = []
- 
-    for s3_key in sorted(all_keys):
-        # Construir path completo del archivo de entrada
-        # Para S3:     s3://bucket/key
-        # Para local:  /abs/path/to/file.parquet  (el runner parchea _parse_s3_url)
-        if staging_base.startswith("s3://") or staging_base.startswith("s3a://"):
-            input_file_path = f"s3://{bucket}/{s3_key}"
-        else:
-            # Modo local: reconstruir path absoluto
-            input_file_path = f"{staging_base.rstrip('/')}/{s3_key.lstrip('/')}"
- 
-        filename        = s3_key.rsplit("/", 1)[-1]
-        output_file_path = build_output_file_path(input_file_path)
- 
-        log_info(f"  --- File: {filename} ---")
- 
-        df_cln   = None
-        df_pre2  = None
-        df_er    = None
-        df_amt   = None
-        df_final = None
- 
-        try:
-            # 1. Leer este parquet individual (sin detección Hive)
-            df_cln  = load_parquet_safe(input_file_path, schema=cln_schema).cache()
- 
-            # 2. Pre2 (PASOS 2+3+4)
-            df_pre2 = calculate_pre2(
-                df_cln=df_cln,
-                df_iar=df_iar,
-                country_df=country_df,
-                region_df=region_df,
-                client_data=client_data,
-                file_id=file_id,
-            ).cache()
- 
-            # 3. Exchange Rate (PASO 5)
-            df_er = calculate_ex_rate(
-                df_cln=df_cln,
-                client_data=client_data,
-                currency_df=currency_df,
-                df_ex=df_ex,
-                file_id=file_id,
-                brand="Mastercard",
-            ).cache()
- 
-            # 4. Settlement Report (PASO 7)
-            df_amt = calculate_settlement_report(
-                df_ex_rate=df_er,
-                df_pre2=df_pre2,
-                currency_df=currency_df,
-            ).cache()
- 
-            # 5. Final Fields
-            df_final_raw = calculate_final_fields(
-                df_cln=df_cln,
-                df_pre2=df_pre2,
-                df_amount=df_amt,
-                client_id=client_data["client_id"],
-                file_id=file_id,
-            )
- 
-            # 6. Exclude Flag
-            df_exclude_keys = build_exclude_keys(df_cln, df_lookup_691)
-            df_final = apply_exclude_flag(df_final_raw, df_exclude_keys).cache()
- 
-            # 7. Escribir con el mismo nombre de archivo que el input
-            record_count = df_final.count()
-            save_parquet(df_final, output_file_path)
- 
-            total_records += record_count
-            processed_files.append({
-                "input":   input_file_path,
-                "output":  output_file_path,
-                "records": record_count,
-            })
-            log_info(f"    ✓ {filename}: {record_count:,} records → {output_file_path}")
- 
-        finally:
-            for _df in [df_cln, df_pre2, df_er, df_amt, df_final]:
-                try:
-                    if _df is not None:
-                        _df.unpersist()
-                except Exception:
-                    pass
- 
-    log_info(f"  MTI {mti} complete: {len(processed_files)} files, {total_records:,} total records")
-    return {
-        "status":        "SUCCESS",
-        "mti":           mti,
-        "input_folder":  input_folder,
-        "output_folder": output_folder,
-        "files":         len(processed_files),
-        "records":       total_records,
-        "detail":        processed_files,
-    }
+    finally:
+        for _df in [df_cln, df_pre2, df_er, df_amt, df_final]:
+            try:
+                if _df is not None:
+                    _df.unpersist()
+            except Exception:
+                pass
 
 
 # =============================================================================
 # 15. MAIN
 # =============================================================================
-
+ 
 def main():
     args = getResolvedOptions(sys.argv, [
         "JOB_NAME",
@@ -1563,7 +1545,6 @@ def main():
         "file_date",
         "outputs",
         "dynamodb_table_client",
-        "s3_key_1644_cln",
         "dynamodb_table_fields",
     ])
  
@@ -1577,7 +1558,7 @@ def main():
     s3_reference_url    = args["S3_REFERENCE"]
     s3_staging_url      = args["S3_STAGING"]
     dynamo_table_client = args["dynamodb_table_client"]
-    s3_key_1644_cln     = args["s3_key_1644_cln"]
+    dynamo_table_fields = args["dynamodb_table_fields"]
     outputs             = json.loads(args["outputs"])
  
     log_info("=" * 70)
@@ -1591,22 +1572,33 @@ def main():
     log_info(f"  S3_REFERENCE:      {s3_reference_url}")
     log_info(f"  S3_STAGING:        {s3_staging_url}")
     log_info(f"  DynamoDB client:   {dynamo_table_client}")
-    log_info(f"  s3_key_1644_cln:   {s3_key_1644_cln}")
-    log_info(f"  MTIs to process:   {len(outputs)}")
+    log_info(f"  DynamoDB fields:   {dynamo_table_fields}")
+    log_info(f"  Total outputs:     {len(outputs)}")
     log_info("=" * 70)
-
+ 
+    # ── Log outputs recibidos ─────────────────────────────────────────────────
+    for i, o in enumerate(outputs):
+        log_info(f"  output[{i}]: mti={o.get('mti','?')} s3_key={o.get('s3_key','?')}")
+ 
     # ── 1. Datos del cliente (DynamoDB) ───────────────────────────────────────
     log_info(f"Loading client data: {client_id}")
     client_data = get_client_data(client_id, dynamo_table_client)
-
-    dynamo_table_fields = args["dynamodb_table_fields"]
-    log_info(f"  DynamoDB fields:   {dynamo_table_fields}")
-
-    # ── Schema CLN desde DynamoDB ─────────────────────────────────────────────
-    log_info("Building CLN schema from DynamoDB...")
-    cln_schema = build_cln_schema_from_dynamodb(dynamo_table_fields, "1240")
  
-    # ── 2. Tablas de referencia (S3 → Spark) ──────────────────────────────────
+    # ── 2. Schemas CLN desde DynamoDB (uno por MTI transaccional) ─────────────
+    # Construidos una vez y reutilizados para todos los archivos del mismo MTI.
+    log_info("Building CLN schemas from DynamoDB...")
+    transactional_mtis = list(dict.fromkeys(
+        str(o.get("mti", ""))
+        for o in outputs
+        if str(o.get("mti", "")) not in ("", "1644", "1740")
+    ))
+    cln_schemas: dict = {}
+    for mti_key in transactional_mtis:
+        log_info(f"  Building schema for MTI {mti_key}...")
+        cln_schemas[mti_key] = build_cln_schema_from_dynamodb(dynamo_table_fields, mti_key)
+    log_info(f"  Schemas built for MTIs: {list(cln_schemas.keys())}")
+ 
+    # ── 3. Tablas de referencia (S3 → Spark) ──────────────────────────────────
     rate_date = _to_rate_date(file_date)
     log_info(f"Loading reference tables (rate_date={rate_date})...")
  
@@ -1621,11 +1613,21 @@ def main():
     log_info(f"  currency rows: {currency_df.count():,}")
     log_info(f"  ex_rate rows:  {df_ex.count():,}")
  
-    # ── 3. Lookup 691 (exclude flag) ──────────────────────────────────────────
-    log_info("Building 691 lookup...")
-    df_lookup_691 = build_lookup_691_spark(s3_staging_url, s3_key_1644_cln)
-
-    # ── 4. Procesar cada MTI ──────────────────────────────────────────────────
+    # ── 4. Lookup 691 desde outputs 1644 ─────────────────────────────────────
+    # Los archivos 1644_CLN vienen directamente en el outputs array (mti=="1644").
+    # Se extrae su s3_key para construir el lookup de exclusión.
+    # No se requiere parámetro separado --s3_key_1644_cln.
+    keys_1644 = [
+        str(o.get("s3_key", ""))
+        for o in outputs
+        if str(o.get("mti", "")) == "1644" and o.get("s3_key")
+    ]
+    log_info(f"Building 691 lookup from {len(keys_1644)} 1644 file(s)...")
+    df_lookup_691 = build_lookup_691_spark(s3_staging_url, keys_1644)
+ 
+    # ── 5. Procesar cada archivo individual ───────────────────────────────────
+    # Cada entrada del outputs array es un parquet específico.
+    # MTI 1644 se usa solo para el lookup (ya procesado arriba) — no es transaccional.
     results       = []
     total_records = 0
  
@@ -1633,10 +1635,24 @@ def main():
         mti          = str(output_config.get("mti", "UNKNOWN"))
         input_s3_key = output_config.get("s3_key", "")
  
+        if mti == "1740":
+            log_info(f"  Skipping mti=1740 (no business logic): {input_s3_key}")
+            results.append({
+                "status": "SUCESS",
+                "mti": "1740",
+                "s3_key": input_s3_key,
+                "records": None,
+            })
+            continue
+ 
+        if mti == "1644":
+            log_info(f"  Skipping mti=1644 (lookup only): {input_s3_key}")
+            continue
+ 
         if not input_s3_key:
             raise ValueError(f"Missing s3_key in output_config for mti={mti}")
  
-        result = process_mti(
+        result = process_file(
             mti=mti,
             input_s3_key=input_s3_key,
             staging_s3_url=s3_staging_url,
@@ -1648,14 +1664,17 @@ def main():
             currency_df=currency_df,
             df_ex=df_ex,
             df_lookup_691=df_lookup_691,
-            cln_schema=cln_schema,
+            cln_schema=cln_schemas.get(mti),
         )
  
         results.append(result)
         total_records += result.get("records", 0)
-        log_info(f"  ✓ MTI {mti}: {result.get('files', 0)} files, {result.get('records', 0):,} records → {result.get('output_folder','?')}")
+        log_info(
+            f"  ✓ mti={mti} | {result.get('records', 0):,} records"
+            f" | {result.get('s3_key', '?')}"
+        )
  
-    # ── 5. Liberar caches y finalizar ─────────────────────────────────────────
+    # ── 6. Liberar caches y finalizar ─────────────────────────────────────────
     for _df in [df_iar, country_df, region_df, currency_df, df_ex, df_lookup_691]:
         try:
             _df.unpersist()
@@ -1666,8 +1685,8 @@ def main():
     log_info("=" * 70)
     log_info("MC-CALCULATE COMPLETED")
     log_info("=" * 70)
-    log_info(f"  Total MTIs:    {len(results)}")
-    log_info(f"  Total records: {total_records:,}")
+    log_info(f"  Total files processed: {len(results)}")
+    log_info(f"  Total records:         {total_records:,}")
  
     output_data = {
         "status":        "SUCCESS",

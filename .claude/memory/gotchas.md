@@ -66,3 +66,31 @@ Problemas encontrados durante el desarrollo, con su causa raíz y solución reco
 **Solución recomendada:** Crear `itx-lambda-extract-role` con solo los permisos que extract necesita (S3 read/write staging, DynamoDB read visa-fields).
 
 **Estado:** Pendiente (documentado en CHANGELOG como tarea para el nuevo ambiente).
+
+---
+
+## glue-mc-interchange: filtra por file_id para no reprocesar ejecuciones anteriores
+
+**Archivo:** `glue/scripts/mastercard/interchange/interchange.py`
+**Detectado:** 2026-06-02 (implementación inicial)
+
+**Problema (resuelto en la implementación):** Sin filtro por `file_id`, el job listaba TODOS los Parquets de la partición `file_type=X/date=YYYY-MM-DD` y reprocesaba archivos de ejecuciones anteriores del mismo día, actualizando su Last-Modified innecesariamente y potencialmente mezclando resultados de diferentes archivos fuente.
+
+**Solución aplicada:** Filtrar los archivos listados por `stem_from_uri(path).upper().startswith(file_id.upper())` antes de procesarlos. Se aplica tanto a los archivos TXN (CLN) como a los CAL.
+
+**Estado:** Resuelto. Comportamiento correcto en producción — cada ejecución del Step Function procesa únicamente sus propios archivos.
+
+**Nota:** Este mismo patrón debe verificarse en `glue-vi-interchange` si alguna vez se presenta el mismo síntoma.
+
+---
+
+## glue-mc-interchange: solo procesa MTIs 1240 y 1442 (1644 y 1740 excluidos)
+
+**Archivo:** `glue/scripts/mastercard/interchange/interchange.py`
+**Detectado:** 2026-06-02
+
+**Comportamiento:** El job llama a `run_interchange_mti()` únicamente para MTIs 1240 y 1442. Los MTIs 1644 (liquidación) y 1740 (fee collection) no tienen capa ITX generada por este job.
+
+**Impacto en mc-store:** `MTIS_WITH_ITX = frozenset({"1240", "1442"})` — el store no intentará buscar `600_IPM_1644_ITX` ni `600_IPM_1740_ITX`, lo que es correcto.
+
+**Estado:** Por diseño. No es un bug. Ver decisión en `decisions.md` sobre por qué no se contrasta contra 1644.

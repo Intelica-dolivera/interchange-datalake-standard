@@ -1,8 +1,8 @@
-{
-  "Variables": {
-    "CLEAN_CHUNK_SIZE": "300000",
-    "DYNAMODB_FIELD_DEFINITION": "itl-0004-itx-dev-dynamo-visa_fields-02",
-    "S3_BUCKET_LANDING": "itl-0004-itx-dev-intchg-02-s3-landing",
-    "S3_BUCKET_STAGING": "itl-0004-itx-dev-intchg-02-s3-staging"
-  }
+﻿{
+    "Variables":  {
+                      "DYNAMODB_FIELD_DEFINITION":  "itl-0004-itx-dev-dynamo-visa_fields-02",
+                      "CLEAN_CHUNK_SIZE":  "300000",
+                      "S3_BUCKET_STAGING":  "itl-0004-itx-dev-intchg-02-s3-staging",
+                      "S3_BUCKET_LANDING":  "itl-0004-itx-dev-intchg-02-s3-landing"
+                  }
 }

@@ -61,9 +61,11 @@ import pandas as pd
 import logging
 import os
 import sys
+import re
 
 LOG_LEVEL = os.environ.get("ITX_LOG_LEVEL", "INFO").upper()
 
+_MTI_FROM_KEY_RE = re.compile(r"/\d+_IPM_(\d{4})_\w+/")
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -293,6 +295,7 @@ class FileStorage:
         layer: _Layer,
         client_id: str,
         file_id: str,
+        file_type: str,
         subdir: str = "",
         filename: str | None = None,
     ) -> str:
@@ -312,13 +315,14 @@ class FileStorage:
             raise ValueError("filename es obligatorio para STAGING/OPERATIONAL")
 
         #return f"{client_id}/MC/"f"date={processing_date}/"f"process={subdir}/{filename}"
-        return f"{client_id}/MC/{subdir}/file_type=IN/date={processing_date}/{filename}"
+        return f"{client_id}/MC/{subdir}/file_type={file_type}/date={processing_date}/{filename}"
 
     def list_parquet_files(
         self,
         layer: _Layer,
         client_id: str,
         file_id: str,
+        file_type:str,
         subdir: str,
     ) -> list[str]:
 
@@ -328,7 +332,7 @@ class FileStorage:
         processing_date = str(file_details["file_processing_date"])
 
         #prefix = f"{client_id}/MC/date={processing_date}/process={subdir}/"
-        prefix = f"{client_id}/MC/{subdir}/file_type=IN/date={processing_date}/"
+        prefix = f"{client_id}/MC/{subdir}/file_type={file_type}/date={processing_date}/"
 
         logging.info(f"Bucket: {bucket}")
         logging.info(f"Prefix: {prefix}")
@@ -350,6 +354,7 @@ class FileStorage:
         self,
         client_id: str,
         file_id: str,
+        file_type: str,
     ) -> tuple[str, str]:
 
         bucket = self._get_bucket_by_layer(self.Layer.LANDING)
@@ -358,6 +363,7 @@ class FileStorage:
             layer=self.Layer.LANDING,
             client_id=client_id,
             file_id=file_id,
+            file_type=file_type,
         )
 
         return bucket, key
@@ -368,6 +374,7 @@ class FileStorage:
         layer: _Layer,
         client_id: str,
         file_id: str,
+        file_type: str,
         subdir: str = "",
         filename: str = "data.parquet",
     ) -> str:
@@ -378,6 +385,7 @@ class FileStorage:
             layer=layer,
             client_id=client_id,
             file_id=file_id,
+            file_type=file_type,
             subdir=subdir,
             filename=filename,
         )
@@ -448,6 +456,37 @@ class FileStorage:
             io.BytesIO(response["Body"].read()),
             columns=columns,
         )
+
+# ──────────────────────────────────────────────────────────────────────
+# Helper: convierte URLs S3 del interpreter al formato que espera
+# mc_calculate → [{"mti": "1240", "s3_key": "SBSA/MC/100_IPM_1240_RAW/..."}]
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _build_outputs_for_stepfunction(s3_urls: list[str]) -> list[dict]:
+    """
+    Transforma la lista de URLs completas que produce _pipeline_mc_interpreter
+    en el array de objetos que consume mc_calculate como parámetro --outputs.
+
+    Input:  ["s3://bucket/SBSA/MC/100_IPM_1240_RAW/file_type=IN/date=.../xxx.parquet", ...]
+    Output: [{"mti": "1240", "s3_key": "SBSA/MC/100_IPM_1240_RAW/file_type=IN/date=.../xxx.parquet"}, ...]
+    """
+    result = []
+    for url in s3_urls:
+        # Quitar prefijo "s3://bucket/" para quedarse solo con el s3_key
+        if url.startswith("s3://"):
+            # "s3://bucket/rest/of/key" → "rest/of/key"
+            without_scheme = url[5:]                          # "bucket/rest/of/key"
+            s3_key = without_scheme.split("/", 1)[1]          # "rest/of/key"
+        else:
+            s3_key = url
+
+        m = _MTI_FROM_KEY_RE.search(url)
+        mti = m.group(1) if m else "UNKNOWN"
+
+        result.append({"mti": mti, "s3_key": s3_key})
+    return result
+
 
 # ==============================================================================
 # 1. Tipos
@@ -1175,6 +1214,7 @@ def apply_pds_for_mti_1644_split(
 def transform_ipm_1240(
     client_id: str,
     file_id: str,
+    file_type: str,
     context=None,
 ) -> None:
 
@@ -1196,12 +1236,13 @@ def transform_ipm_1240(
     )
 
     file_processing_date = file_config["file_processing_date"]
-    file_type = str(file_config["file_type"]).strip().upper()
+    file_type = file_type
 
     keys = fs.list_parquet_files(
         layer=fs.Layer.STAGING,
         client_id=client_id,
         file_id=file_id,
+        file_type=file_type,
         subdir="100_IPM_1240_RAW",
     )
 
@@ -1430,6 +1471,7 @@ def transform_ipm_1240(
             layer=layer.STAGING,
             client_id=client_id,
             file_id=file_id,
+            file_type =  file_type,
             subdir="200_IPM_1240_TRA",
             filename=filename,
         )
@@ -1462,6 +1504,7 @@ def transform_ipm_1240(
 def transform_ipm_1442(
         client_id: str, 
         file_id: str,
+        file_type: str,
         context=None,
 ) -> None:
 
@@ -1478,13 +1521,14 @@ def transform_ipm_1442(
     _, container_cols = get_base_cols_and_containers("1442")
 
     file_processing_date = file_config["file_processing_date"]
-    file_type = str(file_config["file_type"]).strip().upper()
-
+    #file_type = str(file_config["file_type"]).strip().upper()
+    file_type = file_type
     # 1) Obtener lista de parquets derivados
     keys = fs.list_parquet_files(
         layer=fs.Layer.STAGING,
         client_id=client_id,
         file_id=file_id,
+        file_type=file_type,
         subdir="100_IPM_1442_RAW",
     )
 
@@ -1555,7 +1599,7 @@ def transform_ipm_1442(
 
         # 6) Generar parquets
         t = perf_counter()
-        fs.write_parquet(df=df_expand, layer= layer.STAGING , client_id=client_id, file_id=file_id, subdir= '200_IPM_1442_TRA', filename=filename)
+        fs.write_parquet(df=df_expand, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type = file_type, subdir= '200_IPM_1442_TRA', filename=filename)
         logging.info(f"[{i}] write_parquet: {perf_counter() - t:.2f}s")
         
         del df_expand
@@ -1570,6 +1614,7 @@ def transform_ipm_1442(
 def transform_ipm_1644(
     client_id: str, 
     file_id: str,
+    file_type=str,
     context=None,
 ) -> None:
 
@@ -1588,6 +1633,7 @@ def transform_ipm_1644(
         layer=fs.Layer.STAGING,
         client_id=client_id,
         file_id=file_id,
+        file_type=file_type,
         subdir="100_IPM_1644_RAW",
     )
 
@@ -1632,11 +1678,11 @@ def transform_ipm_1644(
         # 6) Generar parquets
         t = perf_counter()
         if df_685 is not None and not df_685.empty:
-            fs.write_parquet(df=df_685, layer= layer.STAGING , client_id=client_id, file_id=file_id, subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_685.parquet")}')
+            fs.write_parquet(df=df_685, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type, subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_685.parquet")}')
         if df_688 is not None and not df_688.empty:
-            fs.write_parquet(df=df_688, layer= layer.STAGING , client_id=client_id, file_id=file_id, subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_688.parquet")}')
+            fs.write_parquet(df=df_688, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type, subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_688.parquet")}')
         if df_691 is not None and not df_691.empty:
-            fs.write_parquet(df=df_691, layer= layer.STAGING , client_id=client_id, file_id=file_id, subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_691.parquet")}')
+            fs.write_parquet(df=df_691, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type,subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_691.parquet")}')
 
         del df_685, df_688, df_691, dfs
 
@@ -1647,6 +1693,7 @@ def transform_ipm_1644(
 def transform_ipm_1740(
         client_id: str, 
         file_id: str, 
+        file_type=str,
         context=None,
 ) -> None:
     
@@ -1667,6 +1714,7 @@ def transform_ipm_1740(
         layer=fs.Layer.STAGING,
         client_id=client_id,
         file_id=file_id,
+        file_type=file_type,
         subdir="100_IPM_1740_RAW",
     )
     
@@ -1726,7 +1774,7 @@ def transform_ipm_1740(
 
         # 6) Generar parquets
         t = perf_counter()
-        fs.write_parquet(df=df_expand, layer= layer.STAGING , client_id=client_id, file_id=file_id, subdir= '200_IPM_1740_TRA', filename=filename)
+        fs.write_parquet(df=df_expand, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type, subdir= '200_IPM_1740_TRA', filename=filename)
         logging.info(f"[{i}] write_parquet: {perf_counter() - t:.2f}s")
         
         del df_expand
@@ -1741,6 +1789,7 @@ TRANSFORMS = {
 def detect_available_mtis(
     client_id: str,
     file_id: str,
+    file_type: str,
 ) -> list[str]:
 
     mtis = []
@@ -1751,6 +1800,7 @@ def detect_available_mtis(
             layer=fs.Layer.STAGING,
             client_id=client_id,
             file_id=file_id,
+            file_type=file_type,
             subdir=f"100_IPM_{mti}_RAW",
         )
 
@@ -1762,47 +1812,118 @@ def detect_available_mtis(
 # ============================================================
 # 9. Handler Lambda
 # ============================================================
+
 layer = FileStorage.Layer
 fs = FileStorage()   
 
 def lambda_handler(event, context):
 
-    logging.info(f"REQUEST_ID={context.aws_request_id}")
     logging.info(f"EVENT={json.dumps(event)}")
 
+    # ------------------------------------------------------------------
+    # 1. Validación de variables de entorno requeridas
+    # ------------------------------------------------------------------
+    s3_staging = os.environ.get("S3_STAGING_BUCKET")
+    if not s3_staging:
+        raise ValueError(
+            "Falta variable de entorno requerida: S3_STAGING_BUCKET"
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Extracción de campos del evento
+    #    Todos los campos vienen al nivel raíz, tal como los produce
+    #    mc_interpreter en el Step Function.
+    # ------------------------------------------------------------------
     client_id = event.get("client_id")
     file_id = event.get("file_id")
+    brand = event.get("brand")
+    brand_id = event.get("brand_id")
+    file_type = event.get("file_type")
+    file_date = event.get("file_date")
+    content_hash = event.get("content_hash")
+    filename = event.get("filename")
 
     if not client_id or not file_id:
-        return {
-            "statusCode": 400,
-            "body": json.dumps({
-                "error": "Falta client_id o file_id"
-            })
-        }
-
-    mtis = detect_available_mtis(
-        client_id=client_id,
-        file_id=file_id,
+        raise ValueError(
+            f"Faltan campos obligatorios en el evento: "
+            f"client_id={client_id!r}, file_id={file_id!r}"
+        )
+    
+    logging.info(
+        f"Processing: client={client_id}, brand={brand}, "
+        f"type={file_type}, date={file_date}, file_id={file_id}"
     )
+    
+    # ------------------------------------------------------------------
+    # 3. Detección de MTIs disponibles
+    #    Se aprovecha interpreter_result.outputs (si existe) para
+    #    derivar los MTIs sin hacer llamadas extra a S3.
+    #    Si no está presente, se cae al fallback de detect_available_mtis.
+    # ------------------------------------------------------------------
+    interpreter_result = event.get("interpreter_result", {})
+    outputs = interpreter_result.get("outputs", [])
 
-    logging.info(f"MTIs detectados: {mtis}")
+    if outputs:
+
+        mtis_from_outputs = list({
+            output["mti"]
+            for output in outputs
+            if output.get("mti") in TRANSFORMS
+        })
+
+        if mtis_from_outputs:
+            logging.info(
+                f"MTIs derivados de interpreter_result.outputs: {mtis_from_outputs}"
+            )
+            mtis = mtis_from_outputs
+
+        else:
+            logging.warning(
+                "No se pudieron derivar MTIs de interpreter_result.outputs. "
+                "Ejecutando fallback con detect_available_mtis."
+        )
+
+            mtis = detect_available_mtis(
+                client_id=client_id,
+                file_id=file_id,
+                file_type=file_type,
+            )
+
+    else:
+        logging.info(
+            "interpreter_result.outputs vacío. Ejecutando detect_available_mtis."
+        )
+
+        mtis = detect_available_mtis(
+            client_id=client_id,
+            file_id=file_id,
+            file_type=file_type,
+        )
+    
+    logging.info(f"MTIs a procesar: {mtis}")
 
     if not mtis:
-        raise ValueError("No se encontraron MTIs para procesar")
+        raise ValueError(
+            f"No se encontraron MTIs para procesar: "
+            f"client_id={client_id}, file_id={file_id}"
+        )
+    
+    # ------------------------------------------------------------------
+    # 4. Ejecución de transforms por MTI
+    # ------------------------------------------------------------------
+    t_global = perf_counter()
 
     for mti in mtis:
 
         transform_fn = TRANSFORMS[mti]
 
         logging.info(f"START transform_ipm_{mti}")
-
         t = perf_counter()
 
         transform_fn(
             client_id=client_id,
             file_id=file_id,
-            context=context,
+            file_type = file_type,
         )
 
         logging.info(
@@ -1810,14 +1931,59 @@ def lambda_handler(event, context):
             f"time={perf_counter() - t:.2f}s"
         )
 
+    logging.info(f"=== Done: {len(mtis)} MTIs procesados | " 
+                 f"Tiempo total= {perf_counter() - t_global:.2f}s ===" )
+    
+    # ------------------------------------------------------------------
+    # 5. Recolección de outputs reales escritos en STAGING
+    #    Para cada MTI procesado, se listan los parquets generados en el
+    #    subdir de salida (200_IPM_<MTI>_TRA) y se construyen las URIs
+    #    s3:// completas, alineando el contrato de salida con el que
+    #    produce mc_interpreter (rutas S3 reales, no códigos MTI).
+    # ------------------------------------------------------------------
+    staging_bucket = fs._get_bucket_by_layer(layer.STAGING)
+    uploaded_outputs: list[str] = []
+
+    for mti in mtis:
+        output_subdir = f"200_IPM_{mti}_TRA"
+        keys = fs.list_parquet_files(
+            layer=layer.STAGING,
+            client_id=client_id,
+            file_type=file_type,
+            file_id=file_id,
+            subdir=output_subdir,
+        )
+        for key in keys:
+            uploaded_outputs.append(f"s3://{staging_bucket}/{key}")
+
+    logging.info(
+        f"Outputs recolectados: {len(uploaded_outputs)} parquets "
+        f"en {len(mtis)} MTIs"
+    )
+
+    uploaded_outputs_json = _build_outputs_for_stepfunction(uploaded_outputs)
+
+    # ------------------------------------------------------------------
+    # 6. Response plano para Step Functions
+    #    Estructura alineada con mc_interpreter:
+    #    outputs = lista de rutas S3 completas de los parquets generados.
+    #    total_outputs = cantidad real de parquets escritos.
+    # ------------------------------------------------------------------
     return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "message": "pipeline ejecutado correctamente",
-            "client_id": client_id,
-            "file_id": file_id,
-            "mtis_processed": mtis,
-        })
+        "status":           "SUCCESS" if uploaded_outputs else "ERROR",
+        "total_outputs":    len(uploaded_outputs),
+        "total_records":    0,
+        "outputs":          uploaded_outputs_json,
+        "client_id":        client_id,
+        "file_id":          file_id,
+        "brand":            brand,
+        "brand_id":         brand_id,
+        "file_type":        file_type,
+        "file_date":        file_date,
+        "content_hash":     content_hash,
+        "filename":         filename,
     }
 
-  
+    
+
+

@@ -1,4 +1,4 @@
-{
+﻿{
     "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-vi-extract",
     "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-vi-extract",
     "Runtime": "python3.11",
