@@ -17,7 +17,7 @@ Este repositorio es la **migración a AWS** de un sistema de procesamiento de ar
 **Desarrollador:** Julio Cesar Cardenas Suca
 **Runtime:** Python 3.11
 **Región AWS:** eu-south-2 (cuenta de prueba)
-**Estado:** Pipeline Visa funcional. Mastercard: todos los componentes implementados (2026-06-02) — pendientes de validacion end-to-end y deploy del ASL actualizado.
+**Estado:** Pipeline Visa implementado y validado. Mastercard: todos los componentes implementados (2026-06-02) — en validacion end-to-end con itx-mastercard-orchestrator.
 
 ---
 
@@ -41,7 +41,7 @@ lmbd-router
     ↓
     ├── direction=ARDEF ──→ lmbd-vi-ardef     [async directo, sin Step Function]
     ├── direction=IAR   ──→ lmbd-mc-iar       [async directo, sin Step Function]
-    ├── brand=VISA      ──→ itx-main-orchestrator (Step Function)
+    ├── brand=VISA      ──→ itx-visa-orchestrator (Step Function)
     └── brand=MASTERCARD──→ itx-mastercard-orchestrator (Step Function)
 
 Step Functions (flujo normal IN/OUT)
@@ -69,7 +69,7 @@ Athena                      → consultas SQL sobre datos finales
 
 | direction | brand | Destino | Razon |
 |-----------|-------|---------|-------|
-| IN / OUT | VISA | `itx-main-orchestrator` | Flujo normal de transacciones |
+| IN / OUT | VISA | `itx-visa-orchestrator` | Flujo normal de transacciones |
 | IN / OUT | MASTERCARD | `itx-mastercard-orchestrator` | Flujo normal de transacciones |
 | ARDEF | VISA | `lmbd-vi-ardef` (directo) | Archivo de reglas/BINes, no requiere orquestacion |
 | IAR | MASTERCARD | `lmbd-mc-iar` (directo) | Archivo de reglas/BINes, no requiere orquestacion |
@@ -152,25 +152,25 @@ Procesa los Parquets RAW del interpreter por MTI. No es extraccion de campos de 
 - MTI 1644: divide por Function Code (685, 688, 691) — cada FC tiene sus propios PDS tags
 - Escribe a `staging/200_IPM_{MTI}_TRA/`
 
-**3. Extract** (`lmbd-mc-extract`) — listo, pendiente de validacion
+**3. Extract** (`lmbd-mc-extract`) — en validacion end-to-end
 Lee los Parquets del transform (capa TRA), alinea el schema contra los layouts de campos en DynamoDB (`mastercard_fields`), renombra columnas tecnicas a nombres de extract estandarizados, rellena columnas faltantes del layout con NA y reordena columnas. Escribe a `staging/300_IPM_{MTI}_EXT/`.
 MTIs soportados: 1240, 1442, 1644 (FC 685/688/691), 1740.
 Equivalente funcional al extract de Visa.
 
-**4. Clean** (`lmbd-mc-clean`) — listo, pendiente de validacion
+**4. Clean** (`lmbd-mc-clean`) — en validacion end-to-end
 Lee los Parquets del extract (capa EXT), castea y normaliza cada columna segun definiciones de dtype en DynamoDB, aplica conversion de moneda usando tabla de referencia desde S3 (`currency/data.parquet`), aplica orden de columnas deterministico y escribe a la capa CLN usando schema PyArrow. Timeout: 300s, /tmp: 10240 MB.
 MTIs soportados: 1240, 1442, 1644 (FC 685/688/691), 1740.
 Equivalente funcional al clean de Visa.
 
-**5. Calculate** (`glue-mc-calculate`) — listo, pendiente de validacion
+**5. Calculate** (`glue-mc-calculate`) — en validacion end-to-end
 Calculo de campos derivados para la tarificacion MC sobre PySpark (Glue 4.0). Funciones principales: `calculate_pre2()` (range-join IAR con bucket-prefix), `calculate_ex_rate()` (tipos de cambio desde S3 Hive), `calculate_settlement_report()`, `calculate_final_fields()` (ensamble + jurisdiction_assigned), `build_lookup_691_spark()` + `apply_exclude_flag()`. Lee datos de referencia desde `s3-reference`: country, region, currency, mastercard_brand_product, mastercard_iar. Escribe a `staging/500_IPM_{MTI}_CAL/`.
 Equivalente funcional al calculate de Visa.
 
-**6. Interchange** (`glue-mc-interchange`) — implementado, pendiente de validacion
+**6. Interchange** (`glue-mc-interchange`) — en validacion end-to-end
 Asigna tarifas IAR a transacciones MTIs 1240 y 1442. Lee CLN + CAL + datos de referencia S3 (`currency/`, `exchange_rate/`, `mc_rules/`). Escribe a `staging/600_IPM_{MTI}_ITX/`.
 Nota: a diferencia de Visa, no contrasta contra MTI 1644 (liquidacion) — scope limitado a tarificacion transaccional en esta version.
 
-**7. Store** (`lmbd-mc-store`) — implementado, pendiente de validacion
+**7. Store** (`lmbd-mc-store`) — en validacion end-to-end
 Consolida CLN + CAL + ITX (si existe) por MTI en un Parquet final y lo escribe a `s3-operational`. Merge horizontal por columnas nuevas (`axis=1`), garantizado por el orden de filas del pipeline.
 MTIs con ITX: 1240, 1442. MTIs sin ITX: 1644, 1740.
 
@@ -217,6 +217,9 @@ interchange-datalake-aws/
 ├── infrastructure/
 │   ├── deploy.sh                   # Script de despliegue completo
 │   └── terraform/                  # IaC Terraform
+├── scripts/                        # Utilitarios locales de desarrollo (no se despliegan)
+│   ├── sync-lambdas.ps1            # Descarga config + codigo de Lambdas desde AWS al repo
+│   └── sync-glue.ps1               # Descarga config + scripts de Glue Jobs desde AWS al repo
 └── .env.example                    # Template de variables de entorno
 ```
 
@@ -331,6 +334,8 @@ Glue Version: 4.0
 
 Cada Glue job tiene un `args.json` junto a su script con los `DefaultArguments` usados en AWS (rutas S3, Spark conf, logging). Sirve como documentacion de los argumentos que Step Functions debe pasar al invocar el job.
 
+**Optimizacion vi-calculate (2026-06-02):** `load_visa_ardef` fue migrado de pandas + `toPandas()` a 100% Spark. La deduplicacion y eliminacion de rangos solapados del ARDEF ahora usa `Window.partitionBy` + `row_number()` y `F.lag()`. Eliminado `import pandas as pd` y el parametro `ardef_pd` de todas las firmas. Motivo: el `toPandas()` presionaba la heap del driver y causaba `Py4JError` en archivos grandes.
+
 ---
 
 ## Convencion de nombres
@@ -346,7 +351,7 @@ Abreviaturas de marca: `vi` = Visa, `mc` = Mastercard
 | S3 Bucket | `itl-0004-itx-{env}-intchg-02-s3-{tipo}` | `itl-0004-itx-dev-intchg-02-s3-landing` |
 | DynamoDB | `itl-0004-itx-{env}-dynamo-{tabla}-02` | `itl-0004-itx-dev-dynamo-file_control-02` |
 | Layer | `itl-0004-itx-{env}-intchg-02-pandas-pyarrow` | `itl-0004-itx-dev-intchg-02-pandas-pyarrow` |
-| Step Function Visa | `itx-main-orchestrator` | — |
+| Step Function Visa | `itx-visa-orchestrator` | — |
 | Step Function MC | `itx-mastercard-orchestrator` | — |
 | IAM Role Lambda | `itl-0004-itx-{env}-intchg-02-lmbd-{marca}-role` | `itl-0004-itx-dev-intchg-02-lmbd-mc-role` |
 
@@ -371,7 +376,7 @@ DYNAMODB_TABLE_FILE_PATTERN=itl-0004-itx-dev-dynamo-file_pattern-02
 DYNAMODB_TABLE_VISA_FIELDS=itl-0004-itx-dev-dynamo-visa_fields-02
 DYNAMODB_TABLE_CLIENT=itl-0004-itx-dev-dynamo-client-02
 
-STEP_FUNCTION_ARN=arn:aws:states:eu-south-2:<account-id>:stateMachine:itx-main-orchestrator
+STEP_FUNCTION_ARN=arn:aws:states:eu-south-2:<account-id>:stateMachine:itx-visa-orchestrator
 
 CHUNK_SIZE_MB=64
 FLUSH_BATCH_SIZE=500000
@@ -408,11 +413,9 @@ terraform apply
 
 ## Pendientes conocidos
 
-**Mastercard — deploy y validacion (todos los componentes ya implementados):**
-- `mc-store`, `glue-mc-interchange`: implementados (2026-06-02) — pendientes de deploy en AWS y validacion end-to-end
-- `itx-mastercard-orchestrator`: ASL completo (2026-06-02) — pendiente de deploy en AWS
-- `mc-transform`, `mc-iar`, `mc-interpreter`, `mc-extract`, `mc-clean`, `glue-mc-calculate`: desplegados, pendientes de pruebas end-to-end
-- Gotchas de mc-transform (timeout multi-MTI, chunking, /tmp, var DDB) pendientes de resolver antes de validacion — ver `.claude/memory/gotchas.md`
+**Mastercard — en validacion end-to-end:**
+- Pipeline MC completo desplegado — validacion en curso con `itx-mastercard-orchestrator`
+- Gotchas de mc-transform (timeout multi-MTI, chunking, /tmp, var DDB) pendientes de resolver — ver `.claude/memory/gotchas.md`
 
 **General:**
 - `itx-lambda-extract-role`: rol IAM propio para itx-extract (actualmente comparte el del router)
@@ -445,6 +448,39 @@ terraform apply
 - Los archivos Visa son texto plano de ancho fijo (latin-1); los de Mastercard son EBCDIC. En ambos casos `transform` los convierte a Parquet y las etapas posteriores solo trabajan con Parquet.
 - Las Lambdas leen y escriben en S3 usando streams para evitar cargar archivos completos en memoria.
 - Los Glue jobs leen del catalogo de Glue (crawlers actualizan el schema automaticamente).
+- `lmbd-unzip` archiva el ZIP original en `s3-archive` (no en `s3-operational`). Usa `S3_BUCKET_ARCHIVE`. Los archivos extraidos se suben al landing para re-disparar el router.
+
+---
+
+## Scripts de sincronizacion (utilitarios locales)
+
+Scripts PowerShell en `scripts/` para mantener el repo sincronizado con el estado real de AWS. **Solo para uso local del desarrollador — no forman parte del pipeline ni del deploy.**
+
+Prerequisito: `aws sso login --profile itx-dev` y `$env:AWS_PROFILE = "itx-dev"`.
+
+**`sync-lambdas.ps1`** — descarga desde AWS al repo:
+- `get-function-configuration` → `config.json`
+- Variables de entorno del Lambda → `env-vars.json`
+- ZIP del deployment descomprimido → `src/`
+
+```powershell
+.\scripts\sync-lambdas.ps1                        # todos
+.\scripts\sync-lambdas.ps1 -Group mc              # solo Mastercard
+.\scripts\sync-lambdas.ps1 -Group vi              # solo Visa
+.\scripts\sync-lambdas.ps1 -Group general         # router, unzip, archive-file
+.\scripts\sync-lambdas.ps1 -Lambda mc-interpreter # uno especifico
+```
+
+**`sync-glue.ps1`** — descarga desde AWS al repo:
+- `get-job` → `config.json`
+- `DefaultArguments` → `args.json`
+- Script PySpark desde S3 → `glue/scripts/*/`
+
+```powershell
+.\scripts\sync-glue.ps1                   # todos
+.\scripts\sync-glue.ps1 -Group mc         # solo Mastercard
+.\scripts\sync-glue.ps1 -Job vi-calculate # uno especifico
+```
 
 ---
 

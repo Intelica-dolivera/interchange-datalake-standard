@@ -69,6 +69,19 @@ Problemas encontrados durante el desarrollo, con su causa raíz y solución reco
 
 ---
 
+## glue-vi-calculate: Py4JError causado por toPandas() en load_visa_ardef — RESUELTO
+
+**Archivo:** `glue/scripts/visa/calculate/calculate.py`
+**Detectado:** 2026-06-02
+
+**Problema:** `load_visa_ardef` descargaba el ARDEF filtrado al driver con `.toPandas()` y luego hacía deduplicación y eliminación de rangos solapados en pandas. Con archivos grandes, presionaba la heap del driver causando OOM → JVM caía → la siguiente llamada a `logger.info()` vía Py4J lanzaba `Py4JError: An error occurred while calling o<N>.info`.
+
+**Solución aplicada (2026-06-02):** Migración completa a Spark — eliminado `toPandas()`, `import pandas as pd` y el parámetro `ardef_pd` de todas las firmas. Las operaciones de deduplicación y eliminación de solapamientos ahora usan `Window.partitionBy` + `row_number()` y `F.lag()`. El ARDEF nunca sale de los executors.
+
+**Estado:** Resuelto. Si vuelve a aparecer `Py4JError` en este job, buscar en CloudWatch `Java heap space` o `ExecutorLostFailure` justo antes.
+
+---
+
 ## glue-mc-interchange: filtra por file_id para no reprocesar ejecuciones anteriores
 
 **Archivo:** `glue/scripts/mastercard/interchange/interchange.py`

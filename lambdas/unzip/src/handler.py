@@ -10,7 +10,7 @@ Flujo:
   3. Inspecciona los archivos internos sin extraer (solo lee el índice)
   4. Filtra por patrones de DynamoDB — mismos que usa el router
   5. Extrae y sube al landing solo los archivos que hacen match
-  6. Archiva el ZIP original → operational/originals/zip/{year}/{month}/
+  6. Archiva el ZIP original → archive/originals/zip/{year}/{month}/
   7. Elimina el ZIP del landing
   8. Los archivos subidos al landing disparan el router via S3 Event
      automáticamente → paralelismo gratis sin configuración adicional
@@ -24,7 +24,7 @@ Formatos de ZIP recibidos:
 
 Variables de entorno:
   S3_BUCKET_LANDING           : bucket de destino para archivos extraídos
-  S3_BUCKET_OPERATIONAL       : bucket para archivar el ZIP original
+  S3_BUCKET_ARCHIVE           : bucket para archivar el ZIP original
   DYNAMODB_TABLE_FILE_PATTERN : tabla de patrones (default: itx-file-pattern)
   EXTRACT_CHUNK_SIZE_MB       : chunk para descargar el ZIP (default: 8MB)
 """
@@ -44,7 +44,7 @@ s3       = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 
 LANDING_BUCKET      = os.environ.get('S3_BUCKET_LANDING')
-OPERATIONAL_BUCKET  = os.environ.get('S3_BUCKET_OPERATIONAL')
+ARCHIVE_BUCKET      = os.environ.get('S3_BUCKET_ARCHIVE')
 FILE_PATTERN_TABLE  = os.environ.get('DYNAMODB_TABLE_FILE_PATTERN', 'itx-file-pattern')
 EXTRACT_CHUNK_BYTES = int(os.environ.get('EXTRACT_CHUNK_SIZE_MB', '8')) * 1024 * 1024
 
@@ -279,7 +279,7 @@ def _archive_zip(
     dest_bucket: str
 ) -> str:
     """
-    Archiva el ZIP original en operational/originals/zip/.
+    Archiva el ZIP original en archive/originals/zip/.
     Usa copy_object server-side — no descarga el archivo.
 
     Estructura:
@@ -357,8 +357,8 @@ def lambda_handler(event, context):
 
     if not LANDING_BUCKET:
         raise ValueError("Missing: S3_BUCKET_LANDING")
-    if not OPERATIONAL_BUCKET:
-        raise ValueError("Missing: S3_BUCKET_OPERATIONAL")
+    if not ARCHIVE_BUCKET:
+        raise ValueError("Missing: S3_BUCKET_ARCHIVE")
 
     client_id      = event.get('client_id')
     bucket_landing = event.get('bucket_landing', LANDING_BUCKET)
@@ -414,13 +414,13 @@ def lambda_handler(event, context):
 
         logger.info(f"Summary: {len(uploaded_keys)} uploaded, {len(skipped)} skipped")
 
-        # Paso 5 — Archivar ZIP original en operational (server-side copy)
+        # Paso 5 — Archivar ZIP original en archive (server-side copy)
         archive_key = _archive_zip(
             source_bucket=bucket_landing,
             source_key=s3_key,
             client_id=client_id,
             file_date=file_date,
-            dest_bucket=OPERATIONAL_BUCKET
+            dest_bucket=ARCHIVE_BUCKET
         )
 
         # Paso 6 — Eliminar ZIP del landing

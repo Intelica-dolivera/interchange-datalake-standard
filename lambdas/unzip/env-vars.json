@@ -1,7 +1,7 @@
 ﻿{
     "Variables":  {
                       "EXTRACT_CHUNK_SIZE_MB":  "64",
-                      "S3_BUCKET_OPERATIONAL":  "itl-0004-itx-dev-intchg-02-s3-operational",
+                      "S3_BUCKET_ARCHIVE":  "itl-0004-itx-dev-intchg-02-s3-archive",
                       "S3_BUCKET_LANDING":  "itl-0004-itx-dev-intchg-02-s3-landing",
                       "DYNAMODB_TABLE_FILE_PATTERN":  "itl-0004-itx-dev-dynamo-file_pattern-02"
                   }

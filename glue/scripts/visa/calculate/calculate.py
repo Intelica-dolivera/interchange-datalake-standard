@@ -1,14 +1,13 @@
 # =============================================================================
-# itl-0004-itx-dev-intchg-02-glue-vi-calculate (PySpark) - AWS Glue Job
+# ITX-CALCULATE (PySpark) - AWS Glue Job
 # =============================================================================
 # Calcula campos adicionales a partir de datos limpios (Clean)
 # Soporta: BASEII (drafts), SMS (messages), VSS (settlement 110/120/130/140)
 # =============================================================================
-
+ 
 import sys
 import json
 from datetime import datetime, date
-import pandas as pd
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
 from awsglue.job import Job
@@ -17,8 +16,8 @@ from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from pyspark.sql.types import StringType, IntegerType, LongType, DoubleType, DateType
 import boto3
-
-
+ 
+ 
 # =============================================================================
 # CONFIGURACIÓN SPARK
 # =============================================================================
@@ -30,15 +29,15 @@ spark = SparkSession.builder \
     .config("spark.sql.parquet.datetimeRebaseModeInWrite", "CORRECTED") \
     .config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MICROS") \
     .getOrCreate()
-
+ 
 glueContext = GlueContext(spark.sparkContext)
 logger = glueContext.get_logger()
-
-
+ 
+ 
 def log_info(message: str):
     logger.info(f"GlueLogger: {message}")
-
-
+ 
+ 
 def log_error(message: str):
     logger.error(f"GlueLogger: {message}")
 
@@ -52,97 +51,105 @@ def load_reference_table(bucket: str, table_name: str) -> DataFrame:
     path = f"s3://{bucket}/{table_name}/data.parquet"
     log_info(f"Loading reference table: {path}")
     return spark.read.parquet(path)
-
-
+ 
+ 
 def load_visa_ardef(reference_bucket: str, file_date: date) -> DataFrame:
     """
     Carga y prepara el ARDEF de Visa filtrado para la fecha del archivo.
-    Procesado en Pandas en el driver para evitar Window operations sin partición.
+    Procesado 100% en Spark — sin toPandas() para soportar ejecución concurrente
+    sin colapso de memoria en el driver.
     """
     path = f"s3://{reference_bucket}/visa_ardef/data.parquet"
     log_info(f"Loading ARDEF from: {path}")
-
+ 
     file_date_str = file_date.strftime("%Y-%m-%d") if isinstance(file_date, date) else str(file_date)
-    file_date_obj = pd.to_datetime(file_date_str).date()
-
-    # Filtrar en Spark antes de toPandas - reduce de 600k filas a solo filas válidas
-
-    ardef_pd = (
+ 
+    # ── 1. Lectura y filtrado inicial en Spark ────────────────────────────────
+    ardef = (
         spark.read.parquet(path)
         .filter(F.col("delete_indicator") == " ")
         .filter(F.col("effective_date") <= file_date_str)
         .filter(
             F.col("valid_until").isNull() |
-            (F.col("valid_until") == "") | 
+            (F.col("valid_until") == "") |
             (F.col("valid_until") >= file_date_str)
         )
-        .toPandas()
     )
-
-    # 2. Convertir fechas
-    ardef_pd["effective_date"] = pd.to_datetime(
-        ardef_pd["effective_date"], errors="coerce"
-    ).dt.date
-    ardef_pd["valid_until"] = pd.to_datetime(
-        ardef_pd["valid_until"], errors="coerce"
-    ).dt.date
-    ardef_pd["valid_until"] = ardef_pd["valid_until"].fillna(file_date_obj)
-
-    # 3. Filtrar rangos válidos para la fecha
-    ardef_pd = ardef_pd[
-        (file_date_obj >= ardef_pd["effective_date"]) &
-        (file_date_obj <= ardef_pd["valid_until"])
-    ]
-
-    # 4. Convertir claves a numérico
-    ardef_pd["low_key_for_range"] = pd.to_numeric(
-        ardef_pd["low_key_for_range"], errors="coerce"
+ 
+    # ── 2. Convertir fechas y rellenar valid_until nulo con file_date ─────────
+    ardef = ardef \
+        .withColumn("effective_date", F.to_date(F.col("effective_date"))) \
+        .withColumn("valid_until",
+                    F.coalesce(
+                        F.to_date(F.col("valid_until")),
+                        F.lit(file_date_str).cast(DateType())
+                    ))
+ 
+    # ── 3. Filtrar rangos válidos para la fecha (post conversión de nulos) ────
+    ardef = ardef.filter(
+        (F.col("effective_date") <= F.lit(file_date_str)) &
+        (F.col("valid_until") >= F.lit(file_date_str))
     )
-    ardef_pd["table_key"] = pd.to_numeric(
-        ardef_pd["table_key"], errors="coerce"
+ 
+    # ── 4. Convertir claves a numérico ────────────────────────────────────────
+    ardef = ardef \
+        .withColumn("low_key_for_range", F.col("low_key_for_range").cast(LongType())) \
+        .withColumn("table_key", F.col("table_key").cast(LongType()))
+ 
+    # ── 5. Deduplicar por table_key (effective_date más reciente) ─────────────
+    w_table_key = Window.partitionBy("table_key").orderBy(
+        F.col("effective_date").desc(),
+        F.col("low_key_for_range").asc()
     )
-
-    # 5. Deduplicar por table_key (effective_date más reciente)
-    ardef_pd = ardef_pd.sort_values(
-        ["table_key", "effective_date", "low_key_for_range"],
-        ascending=[True, False, True]
+    ardef = ardef \
+        .withColumn("_rn", F.row_number().over(w_table_key)) \
+        .filter(F.col("_rn") == 1) \
+        .drop("_rn")
+ 
+    # ── 6. Deduplicar por low_key_for_range ───────────────────────────────────
+    w_low_key = Window.partitionBy("low_key_for_range").orderBy(
+        F.col("low_key_for_range").asc()
     )
-    ardef_pd = ardef_pd.drop_duplicates(subset="table_key", keep="first")
-
-    # 6. Deduplicar por low_key_for_range
-    ardef_pd = ardef_pd.sort_values("low_key_for_range")
-    ardef_pd = ardef_pd.drop_duplicates(subset="low_key_for_range", keep="first")
-
-    # 7. Eliminar rangos solapados — SIN Window de Spark, directo en Pandas
-    ardef_pd["previous_table_key"] = ardef_pd["table_key"].shift(1)
-    ardef_pd = ardef_pd[
-        ardef_pd["previous_table_key"].isna() |
-        (ardef_pd["low_key_for_range"] > ardef_pd["previous_table_key"])
-    ].drop(columns=["previous_table_key"])
-
-    # 8. Seleccionar campos necesarios
+    ardef = ardef \
+        .withColumn("_rn", F.row_number().over(w_low_key)) \
+        .filter(F.col("_rn") == 1) \
+        .drop("_rn")
+ 
+    # ── 7. Eliminar rangos solapados (equivalente a pandas shift(1)) ──────────
+    # lag() sobre low_key_for_range ordenado = previous_table_key de pandas
+    w_overlap = Window.orderBy("low_key_for_range")
+    ardef = ardef \
+        .withColumn("_prev_table_key", F.lag("table_key", 1).over(w_overlap)) \
+        .filter(
+            F.col("_prev_table_key").isNull() |
+            (F.col("low_key_for_range") > F.col("_prev_table_key"))
+        ) \
+        .drop("_prev_table_key")
+ 
+    # ── 8. Seleccionar campos necesarios ──────────────────────────────────────
     ardef_fields = [
         "low_key_for_range", "table_key", "account_funding_source",
-        "ardef_country", 
-        #"ardef_region", 
+        "ardef_country",
+        # "ardef_region",
         "b2b_program_id", "country",
         "fast_funds", "nnss_indicator", "product_id", "product_subtype",
         "region", "technology_indicator", "travel_indicator"
     ]
-    existing_fields = [f for f in ardef_fields if f in ardef_pd.columns]
-    ardef_pd = ardef_pd[existing_fields]
-
-    # 9. Renombrar product_id para evitar conflicto
-    if "product_id" in ardef_pd.columns:
-        ardef_pd = ardef_pd.rename(columns={"product_id": "ardef_product_id"})
-
-    log_info(f"ARDEF loaded: {len(ardef_pd):,} valid ranges for date {file_date_str}")
-
-    # 10. Convertir a Spark y cachear — se usa múltiples veces en los joins
-    ardef_spark = spark.createDataFrame(ardef_pd)
-    return ardef_spark.cache(), ardef_pd
-
-
+    existing_fields = [f for f in ardef_fields if f in ardef.columns]
+    ardef = ardef.select(existing_fields)
+ 
+    # ── 9. Renombrar product_id para evitar conflicto en joins ────────────────
+    if "product_id" in ardef.columns:
+        ardef = ardef.withColumnRenamed("product_id", "ardef_product_id")
+ 
+    # ── 10. Cachear — se usa múltiples veces en los joins ─────────────────────
+    ardef = ardef.cache()
+    count = ardef.count()
+    log_info(f"ARDEF loaded: {count:,} valid ranges for date {file_date_str}")
+ 
+    return ardef
+ 
+ 
 def load_country_table(reference_bucket: str) -> DataFrame:
     """Carga la tabla de países."""
     country = load_reference_table(reference_bucket, "country")
@@ -150,8 +157,8 @@ def load_country_table(reference_bucket: str) -> DataFrame:
         F.col("country_code"),
         F.col("visa_region_code")
     )
-
-
+ 
+ 
 def load_currency_table(reference_bucket: str) -> DataFrame:
     """Carga la tabla de monedas."""
     currency = load_reference_table(reference_bucket, "currency")
@@ -164,7 +171,7 @@ def load_currency_table(reference_bucket: str) -> DataFrame:
 # =============================================================================
 # HELPERS: CARGA DE DATOS DEL CLIENTE (DynamoDB)
 # =============================================================================
-
+ 
 def get_client_data(client_id: str, dynamodb_table_client: str) -> dict:
     """Obtiene metadatos del cliente desde DynamoDB."""
     dynamodb = boto3.resource('dynamodb')
@@ -195,7 +202,7 @@ def get_client_data(client_id: str, dynamodb_table_client: str) -> dict:
 # =============================================================================
 # HELPER: JOIN CON ARDEF
 # =============================================================================
-
+ 
 def join_with_ardef(df: DataFrame, ardef: DataFrame, account_column: str = "account_number") -> DataFrame:
     """
     Range join hiper-optimizado en PySpark usando Bucketing por prefijos.
@@ -210,20 +217,20 @@ def join_with_ardef(df: DataFrame, ardef: DataFrame, account_column: str = "acco
     # 🌟 LA MAGIA DE SPARK: CREAR UNA LLAVE EXACTA (PREFIX DE 3 DÍGITOS) 🌟
     # Dividimos entre 1,000,000 para quedarnos con los primeros 3 dígitos (ej. 411)
     df = df.withColumn("join_prefix", F.floor(F.col("account_9") / 1000000).cast(IntegerType()))
-
+ 
     # En ARDEF, identificamos desde qué prefijo hasta qué prefijo va el rango
     ardef_opt = ardef.withColumn("prefix_low", F.floor(F.col("low_key_for_range") / 1000000).cast(IntegerType())) \
                      .withColumn("prefix_high", F.floor(F.col("table_key") / 1000000).cast(IntegerType()))
     
     # Si un rango abarca múltiples prefijos (ej. 411 a 412), creamos una fila para cada uno usando sequence y explode
     ardef_opt = ardef_opt.withColumn("join_prefix", F.explode(F.sequence(F.col("prefix_low"), F.col("prefix_high"))))
-
+ 
     # Limpiamos posibles columnas solapadas del Clean para evitar ambigüedades
     ardef_cols = ardef.columns
     cols_to_drop = [c for c in ardef_cols if c in df.columns and c != "record"]
     if cols_to_drop:
         df = df.drop(*cols_to_drop)
-
+ 
     # 🚀 EL SÚPER JOIN: Primero busca el bucket exacto (O(1)), luego verifica el rango
     df_with_ardef = df.join(
         F.broadcast(ardef_opt),
@@ -249,15 +256,15 @@ def join_with_ardef(df: DataFrame, ardef: DataFrame, account_column: str = "acco
 # =============================================================================
 # HELPER: CARGAR Y GUARDAR PARQUET
 # =============================================================================
-
+ 
 def load_parquet_safe(path: str) -> DataFrame:
     """Carga un archivo Parquet."""
     df = spark.read.parquet(path)
     count = df.count()
     log_info(f"  Loaded {count:,} records from {path}")
     return df
-
-
+ 
+ 
 def save_parquet(df: DataFrame, path: str):
     """Guarda DataFrame como Parquet."""
     df.coalesce(1).write.mode("overwrite").parquet(path)
@@ -267,43 +274,43 @@ def save_parquet(df: DataFrame, path: str):
 # =============================================================================
 # CAMPOS CALCULADOS BASEII - GRUPO 1: Campos directos del ARDEF
 # =============================================================================
-
+ 
 def calc_ardef_country(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_ardef_country", F.col("ardef_country"))
-
-
+ 
+ 
 def calc_b2b_program_id(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_b2b_program_id", F.col("b2b_program_id"))
-
-
+ 
+ 
 def calc_fast_funds(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_fast_funds", F.col("fast_funds"))
-
-
+ 
+ 
 def calc_funding_source(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_funding_source", F.col("account_funding_source"))
-
-
+ 
+ 
 def calc_issuer_country(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_issuer_country", F.col("country"))
-
-
+ 
+ 
 def calc_nnss_indicator(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_nnss_indicator", F.col("nnss_indicator"))
-
-
+ 
+ 
 def calc_product_id_ardef(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_product_id", F.col("ardef_product_id"))
-
-
+ 
+ 
 def calc_product_subtype(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_product_subtype", F.col("product_subtype"))
-
-
+ 
+ 
 def calc_technology_indicator(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_technology_indicator", F.col("technology_indicator"))
-
-
+ 
+ 
 def calc_travel_indicator(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_travel_indicator", F.col("travel_indicator"))
 
@@ -311,14 +318,14 @@ def calc_travel_indicator(df: DataFrame) -> DataFrame:
 # =============================================================================
 # CAMPOS CALCULADOS BASEII - GRUPO 2: String manipulation / coalesce
 # =============================================================================
-
+ 
 def calc_issuer_bin_8(df: DataFrame, account_column: str = "account_number") -> DataFrame:
     return df.withColumn(
         "calc_issuer_bin_8",
         F.regexp_replace(F.col(account_column), "\\*", "0").substr(1, 8)
     )
-
-
+ 
+ 
 def calc_authorization_code_valid_draft(df: DataFrame) -> DataFrame:
     """
     authorization_code_valid para BASEII/draft.
@@ -336,8 +343,8 @@ def calc_authorization_code_valid_draft(df: DataFrame) -> DataFrame:
             F.lit("INVALID")
         ).otherwise(F.lit("VALID"))
     )
-
-
+ 
+ 
 def calc_authorization_code_valid_sms(df: DataFrame) -> DataFrame:
     """authorization_code_valid para SMS usando authorization_id_resp._code"""
     invalid_suffixes = [" ", "0000", "00000", "0000n", "0000p", "0000y"]
@@ -353,8 +360,8 @@ def calc_authorization_code_valid_sms(df: DataFrame) -> DataFrame:
             F.lit("INVALID")
         ).otherwise(F.lit("VALID"))
     )
-
-
+ 
+ 
 def calc_business_application_id(df: DataFrame) -> DataFrame:
     """Coalesce de business_application_id_fl, _cr, _ft"""
     return df.withColumn(
@@ -365,8 +372,8 @@ def calc_business_application_id(df: DataFrame) -> DataFrame:
             F.when(F.trim(F.col("business_application_id_ft")) != "", F.trim(F.col("business_application_id_ft")))
         )
     )
-
-
+ 
+ 
 def calc_business_format_code(df: DataFrame) -> DataFrame:
     """Coalesce de business_format_code_cr, _fl, _ft, _df, _pd, _sd, _sp"""
     return df.withColumn(
@@ -381,8 +388,8 @@ def calc_business_format_code(df: DataFrame) -> DataFrame:
             F.when(F.trim(F.col("business_format_code_sp")) != "", F.trim(F.col("business_format_code_sp")))
         )
     )
-
-
+ 
+ 
 def calc_message_reason_code(df: DataFrame) -> DataFrame:
     """Coalesce de message_reason_code_df, _sd, _sp"""
     return df.withColumn(
@@ -393,8 +400,8 @@ def calc_message_reason_code(df: DataFrame) -> DataFrame:
             F.when(F.trim(F.col("message_reason_code_sp")) != "", F.trim(F.col("message_reason_code_sp")))
         )
     )
-
-
+ 
+ 
 def calc_network_identification_code(df: DataFrame) -> DataFrame:
     """Coalesce de network_identification_code_df, _sd, _sp"""
     return df.withColumn(
@@ -405,8 +412,8 @@ def calc_network_identification_code(df: DataFrame) -> DataFrame:
             F.when(F.trim(F.col("network_identification_code_sp")) != "", F.trim(F.col("network_identification_code_sp")))
         )
     )
-
-
+ 
+ 
 def calc_type_of_purchase(df: DataFrame) -> DataFrame:
     """Coalesce de type_of_purchase_fl, _ft"""
     return df.withColumn(
@@ -416,8 +423,8 @@ def calc_type_of_purchase(df: DataFrame) -> DataFrame:
             F.when(F.trim(F.col("type_of_purchase_ft")) != "", F.trim(F.col("type_of_purchase_ft")))
         )
     )
-
-
+ 
+ 
 def calc_surcharge_amount(df: DataFrame) -> DataFrame:
     """MAX de surcharge_amount_df, _sd, _sp"""
     return df.withColumn(
@@ -433,7 +440,7 @@ def calc_surcharge_amount(df: DataFrame) -> DataFrame:
 # =============================================================================
 # CAMPOS CALCULADOS BASEII - GRUPO 3: Lógica condicional
 # =============================================================================
-
+ 
 def calc_business_mode_draft(df: DataFrame, file_type: str) -> DataFrame:
     """
     business_mode para BASEII/draft.
@@ -505,8 +512,8 @@ def calc_business_transaction_type_draft(df: DataFrame) -> DataFrame:
             F.lit(22)
         ).otherwise(F.lit(255))
     )
-
-
+ 
+ 
 def calc_business_transaction_type_sms(df: DataFrame) -> DataFrame:
     """business_transaction_type para SMS."""
     df = df.withColumn("_rmt", F.col("request_message_type"))
@@ -551,8 +558,8 @@ def calc_reversal_indicator_draft(df: DataFrame) -> DataFrame:
         "calc_reversal_indicator",
         F.when(F.col("draft_code").isin(reversal_codes), F.lit(1)).otherwise(F.lit(0))
     )
-
-
+ 
+ 
 def calc_reversal_indicator_sms(df: DataFrame) -> DataFrame:
     """reversal_indicator para SMS."""
     return df.withColumn(
@@ -565,13 +572,13 @@ def calc_reversal_indicator_sms(df: DataFrame) -> DataFrame:
             F.lit(1)
         ).otherwise(F.lit(0))
     )
-
-
+ 
+ 
 def calc_jurisdiction_country_draft(df: DataFrame) -> DataFrame:
     """jurisdiction_country para BASEII/draft = merchant_country_code"""
     return df.withColumn("calc_jurisdiction_country", F.col("merchant_country_code"))
-
-
+ 
+ 
 def calc_jurisdiction_country_sms(df: DataFrame) -> DataFrame:
     """jurisdiction_country para SMS = card_acceptor_country"""
     return df.withColumn("calc_jurisdiction_country", F.col("card_acceptor_country"))
@@ -580,7 +587,7 @@ def calc_jurisdiction_country_sms(df: DataFrame) -> DataFrame:
 # =============================================================================
 # CAMPOS CALCULADOS BASEII - GRUPO 4: JOINs con country/currency
 # =============================================================================
-
+ 
 def calc_issuer_region(df: DataFrame, country_df: DataFrame) -> DataFrame:
     """issuer_region: JOIN country del ARDEF con tabla country."""
     country_for_issuer = country_df.select(
@@ -595,8 +602,8 @@ def calc_issuer_region(df: DataFrame, country_df: DataFrame) -> DataFrame:
     ).drop("_country_code_issuer")
     
     return df
-
-
+ 
+ 
 def calc_jurisdiction_region_draft(df: DataFrame, country_df: DataFrame) -> DataFrame:
     """jurisdiction_region para BASEII/draft: JOIN merchant_country_code."""
     country_for_merchant = country_df.select(
@@ -611,8 +618,8 @@ def calc_jurisdiction_region_draft(df: DataFrame, country_df: DataFrame) -> Data
     ).drop("_country_code_merchant")
     
     return df
-
-
+ 
+ 
 def calc_jurisdiction_region_sms(df: DataFrame, country_df: DataFrame) -> DataFrame:
     """jurisdiction_region para SMS: JOIN card_acceptor_country."""
     country_for_merchant = country_df.select(
@@ -627,8 +634,8 @@ def calc_jurisdiction_region_sms(df: DataFrame, country_df: DataFrame) -> DataFr
     ).drop("_country_code_merchant")
     
     return df
-
-
+ 
+ 
 def calc_source_currency_code_alphabetic_draft(df: DataFrame, currency_df: DataFrame) -> DataFrame:
     """source_currency_code_alphabetic para BASEII/draft."""
     currency_lookup = currency_df.select(
@@ -643,8 +650,8 @@ def calc_source_currency_code_alphabetic_draft(df: DataFrame, currency_df: DataF
     ).drop("_currency_numeric")
     
     return df
-
-
+ 
+ 
 def calc_source_currency_code_alphabetic_sms(df: DataFrame, currency_df: DataFrame) -> DataFrame:
     """source_currency_code_alphabetic para SMS usando draft_currency_code."""
     currency_lookup = currency_df.select(
@@ -664,7 +671,7 @@ def calc_source_currency_code_alphabetic_sms(df: DataFrame, currency_df: DataFra
 # =============================================================================
 # JURISDICTION - DRAFT
 # =============================================================================
-
+ 
 def calc_jurisdiction_draft(df: DataFrame, country_df: DataFrame, file_type: str, client_data: dict) -> DataFrame:
     """
     jurisdiction para BASEII/draft.
@@ -763,7 +770,7 @@ def calc_jurisdiction_assigned_draft(df: DataFrame) -> DataFrame:
 # =============================================================================
 # JURISDICTION - SMS
 # =============================================================================
-
+ 
 def calc_jurisdiction_sms(df: DataFrame, country_df: DataFrame, client_data: dict) -> DataFrame:
     """
     jurisdiction para SMS.
@@ -860,7 +867,7 @@ def calc_jurisdiction_assigned_sms(df: DataFrame) -> DataFrame:
 # =============================================================================
 # TIMELINESS
 # =============================================================================
-
+ 
 def calc_timeliness_draft(df: DataFrame) -> DataFrame:
     """
     timeliness para BASEII/draft.
@@ -905,19 +912,19 @@ def calc_timeliness_sms(df: DataFrame) -> DataFrame:
 # =============================================================================
 # CAMPOS ESPECÍFICOS SMS
 # =============================================================================
-
+ 
 def calc_acquirer_bin(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_acquirer_bin", F.substring(F.col("retrieval_reference_number"), 1, 6))
-
-
+ 
+ 
 def calc_processing_code_transaction_type(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_processing_code_transaction_type", F.substring(F.col("processing_code"), 1, 2))
-
-
+ 
+ 
 def calc_source_amount_sms(df: DataFrame) -> DataFrame:
     return df.withColumn("calc_source_amount", F.col("draft_amount"))
-
-
+ 
+ 
 def calc_transaction_code_sms(df: DataFrame) -> DataFrame:
     """transaction_code_sms basado en business_transaction_type + reversal_indicator."""
     df = df.withColumn(
@@ -946,12 +953,12 @@ def calc_transaction_code_sms(df: DataFrame) -> DataFrame:
 # =============================================================================
 # CAMPOS CALCULADOS VSS
 # =============================================================================
-
+ 
 def calc_vss_report_type(df: DataFrame, vss_type: str) -> DataFrame:
     """vss_report_type: int del vss_type (110, 120, 130, 140)"""
     return df.withColumn("calc_vss_report_type", F.lit(int(vss_type)).cast(LongType()))
-
-
+ 
+ 
 def calc_vss_aggregation_level(df: DataFrame, vss_type: str) -> DataFrame:
     """
     vss_aggregation_level con lógica recursiva completa.
@@ -1030,8 +1037,8 @@ def calc_vss_aggregation_level(df: DataFrame, vss_type: str) -> DataFrame:
 # =============================================================================
 # FUNCIONES PRINCIPALES DE CÁLCULO
 # =============================================================================
-
-def calculate_baseii_fields(df: DataFrame, ardef: DataFrame, ardef_pd: DataFrame, country_df: DataFrame,
+ 
+def calculate_baseii_fields(df: DataFrame, ardef: DataFrame, country_df: DataFrame,
                             currency_df: DataFrame, file_type: str, client_data: dict) -> DataFrame:
     """Calcula todos los campos adicionales para BASEII (28 campos)."""
     log_info("Calculating BASEII fields")
@@ -1126,7 +1133,7 @@ def calculate_baseii_fields(df: DataFrame, ardef: DataFrame, ardef_pd: DataFrame
     return result
 
 
-def calculate_sms_fields(df: DataFrame, ardef: DataFrame, ardef_pd: DataFrame, country_df: DataFrame,
+def calculate_sms_fields(df: DataFrame, ardef: DataFrame, country_df: DataFrame,
                          currency_df: DataFrame, client_data: dict) -> DataFrame:
     """Calcula todos los campos adicionales para SMS (26 campos)."""
     log_info("Calculating SMS fields")
@@ -1239,9 +1246,9 @@ def calculate_vss_fields(df: DataFrame, vss_type: str) -> DataFrame:
 # =============================================================================
 # HELPER: PROCESAR OUTPUT
 # =============================================================================
-
+ 
 def process_output(output_config: dict, staging_bucket: str, reference_bucket: str,
-                   file_type: str, file_date: str, client_data: dict, ardef: DataFrame, ardef_pd,
+                   file_type: str, file_date: str, client_data: dict, ardef: DataFrame,
                    country_df: DataFrame, currency_df: DataFrame) -> dict:
     """
     Procesa un output específico (BASEII, SMS, o VSS_xxx).
@@ -1264,9 +1271,9 @@ def process_output(output_config: dict, staging_bucket: str, reference_bucket: s
     df = load_parquet_safe(input_path)
     
     if output_type == 'BASEII':
-        result_df = calculate_baseii_fields(df, ardef, ardef_pd, country_df, currency_df, file_type, client_data)
+        result_df = calculate_baseii_fields(df, ardef, country_df, currency_df, file_type, client_data)
     elif output_type == 'SMS':
-        result_df = calculate_sms_fields(df, ardef, ardef_pd, country_df, currency_df, client_data)
+        result_df = calculate_sms_fields(df, ardef, country_df, currency_df, client_data)
     elif output_type.startswith('VSS_'):
         vss_type = output_type.replace('VSS_', '')
         result_df = calculate_vss_fields(df, vss_type)
@@ -1289,11 +1296,18 @@ def process_output(output_config: dict, staging_bucket: str, reference_bucket: s
 # =============================================================================
 # MAIN
 # =============================================================================
-
+ 
 def main():
     args = getResolvedOptions(sys.argv, [
-        'JOB_NAME', 'client_id', 'file_id', 'file_type', 'file_date',
-        'staging_bucket', 'reference_bucket', 'outputs', 'dynamodb_table_client'
+        'JOB_NAME', 
+        'reference_bucket', 
+        'staging_bucket', 
+        'client_id', 
+        'file_id', 
+        'file_type', 
+        'file_date',
+        'outputs', 
+        'dynamodb_table_client'
     ])
     
     job = Job(glueContext)
@@ -1333,7 +1347,7 @@ def main():
     
     # Cargar tablas de referencia
     log_info("Loading reference tables...")
-    ardef, ardef_pd = load_visa_ardef(reference_bucket, file_date_obj)
+    ardef = load_visa_ardef(reference_bucket, file_date_obj)
     country_df = load_country_table(reference_bucket).cache()
     currency_df = load_currency_table(reference_bucket).cache()
     
@@ -1356,7 +1370,6 @@ def main():
             file_date=file_date,
             client_data=client_data,
             ardef=ardef,
-            ardef_pd=ardef_pd,
             country_df=country_df,
             currency_df=currency_df
         )
@@ -1380,11 +1393,11 @@ def main():
     }
     
     log_info(f"Output: {json.dumps(output_data)}")
-
+ 
     ardef.unpersist()
     country_df.unpersist()
     currency_df.unpersist()
-
+ 
     job.commit()
     
     return output_data
