@@ -477,6 +477,12 @@
         "cal_outputs.$": "$.calculate_input.outputs"
       },
       "ResultPath": "$.final_success_info",
+      "Next": "WaitForENIRelease"
+    },
+    "WaitForENIRelease": {
+      "Type": "Wait",
+      "Comment": "Espera 3 minutos para que AWS libere las ENIs del job Calculate antes de lanzar Interchange",
+      "Seconds": 180,
       "Next": "PrepareInterchangeInput"
     },
     "PrepareInterchangeInput": {

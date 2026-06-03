@@ -241,9 +241,7 @@ def build_pre_eval_pyspark(
     df_rules: DataFrame,
 ) -> DataFrame:
     """
-    Migración PySpark del calculate_pre_eval DuckDB/Pandas.
- 
-    En esta versión se lee TXN con schema Dynamo para evitar:
+    Se lee TXN con schema Dynamo para evitar:
       Illegal Parquet type: INT64 (TIMESTAMP(NANOS,false))
     """
  
@@ -327,25 +325,26 @@ def build_pre_eval_pyspark(
  
     log(f"[PRE_EVAL] dynamic target currencies={target_ccys}")
  
-    ex = df_exchange_rate.filter(F.upper(F.col("brand")) == F.lit("MASTERCARD")).select(
-        F.to_date("rate_date").alias("rate_date_d"),
-        F.col("currency_from_code").cast("long").alias("currency_from_code_num"),
-        F.upper(F.trim(F.col("currency_to"))).alias("currency_to_u"),
-        F.col("exchange_value").cast("double").alias("exchange_value_num"),
+    ex = (
+        df_exchange_rate
+        .filter(F.upper(F.col("brand")) == F.lit("MASTERCARD"))
+        .select(
+            F.col("currency_from_code").cast("long").alias("currency_from_code_num"),
+            F.upper(F.trim(F.col("currency_to"))).alias("currency_to_u"),
+            F.col("exchange_value").cast("double").alias("exchange_value_num"),
+        )
     )
- 
+
     for ccy in target_ccys:
         ccy_l = ccy.lower()
         ex_ccy = ex.filter(F.col("currency_to_u") == ccy).select(
-            F.col("rate_date_d").alias(f"rate_date_{ccy_l}"),
             F.col("currency_from_code_num").alias(f"currency_from_code_{ccy_l}"),
             F.col("exchange_value_num").alias(f"fx_to_{ccy_l}"),
         )
  
         out = out.join(
             F.broadcast(ex_ccy),
-            (F.col(f"rate_date_{ccy_l}") == F.col("txn_date"))
-            & (F.col(f"currency_from_code_{ccy_l}") == F.col("currency_code_transaction")),
+            F.col(f"currency_from_code_{ccy_l}") == F.col("currency_code_transaction"),
             "left",
         )
  
@@ -361,7 +360,7 @@ def build_pre_eval_pyspark(
                 ).cast("string"),
                 F.lit("BLANK"),
             ),
-        ).drop(f"rate_date_{ccy_l}", f"currency_from_code_{ccy_l}", f"fx_to_{ccy_l}")
+        ).drop(f"currency_from_code_{ccy_l}", f"fx_to_{ccy_l}")
  
     return out
 
@@ -369,13 +368,16 @@ def build_pre_eval_pyspark(
 # =============================================================================
 # STEP 2 - ASSIGN RULES SIMPLE
 # =============================================================================
- 
+
+
 def _blank_rule_condition(rule_col: str):
     s = F.lower(F.trim(F.col(rule_col).cast("string")))
     return F.col(rule_col).isNull() | s.isin("", "none", "nan", "null")
- 
+
+
 def _norm_col(col_expr):
     return F.upper(F.regexp_replace(F.trim(col_expr.cast("string")), " ", ""))
+
  
 def _simple_rule_condition(rule_col: str, work_col: str):
     """
@@ -572,7 +574,7 @@ def prefilter_rules_needed(df_eval: DataFrame, df_rules: DataFrame) -> DataFrame
 
 def assign_rules_simple(df_eval: DataFrame, df_rules: DataFrame) -> DataFrame:
     """
-    Primera versión del motor de reglas en PySpark.
+    Motor de reglas
  
     Incluye:
       - prefiltro de reglas candidatas
@@ -688,7 +690,53 @@ def calculate_mastercard_fee_pyspark(
     df_exchange_rate: DataFrame,
     brand_fx_eval: str = "MASTERCARD",
 ) -> DataFrame:
- 
+    
+    """
+    Calcula el Interchange Fee Mastercard.
+
+    Conceptos:
+
+    - amount_transaction:
+        Monto original de la transacción.
+    - transaction currency:
+        Moneda original de la transacción.
+    - rate currency:
+        Moneda en la que la regla Mastercard está definida.
+    - settlement currency:
+        Moneda final utilizada para liquidar el fee.
+    - FX (Foreign Exchange):
+        Tipo de cambio utilizado para convertir importes entre monedas.
+
+    Proceso:
+
+    1. Convertir el monto de la transacción a la moneda de la regla utilizando el tipo de cambio del día de la transacción.
+    2. Calcular el fee preliminar:
+       fee = (amount * rate_variable) + rate_fixed
+    3. Aplicar restricciones de la regla:
+       fee_final = min(rate_cap, max(rate_min, fee))
+    4. Convertir el fee calculado desde la moneda de la regla
+    hacia la moneda de settlement.
+
+    Resultado:
+
+    - calculated_fee
+      Fee en moneda de regla.
+    - calculated_fee_settlement
+      Fee en moneda settlement.
+    - fx_multiplier
+      Tipo de cambio utilizado para convertir
+      transaction currency -> rule currency.
+    - fx_rule_to_settlement
+        Tipo de cambio utilizado para convertir
+        rule currency -> settlement currency.
+        
+    """
+
+    # ============================================================================
+    # STEP 1
+    # Normalización de datos y conversión de tipos
+    # ============================================================================
+    
     a = (
         df_assign
         .withColumn("amount_transaction_num", F.col("amount_transaction").cast("double"))
@@ -701,64 +749,68 @@ def calculate_mastercard_fee_pyspark(
         .withColumn("trx_currency_u", F.upper(F.trim(F.col("amount_transaction_currency").cast("string"))))
         .withColumn("settlement_currency_u", F.upper(F.trim(F.col("settlement_report_currency_code").cast("string"))))
     )
- 
-    # ex = (
-    #     df_exchange_rate
-    #     .filter(F.upper(F.col("brand")) == F.upper(F.lit(brand_fx_eval)))
-    #     .select(
-    #         F.col("currency_from").cast("string").alias("currency_from"),
-    #         F.col("currency_from_code").cast("long").alias("currency_from_code"),
-    #         F.upper(F.trim(F.col("currency_to").cast("string"))).alias("currency_to_u"),
-    #         F.col("currency_to_code").cast("long").alias("currency_to_code"),
-    #         F.col("exchange_value").cast("double").alias("exchange_value_num"),
-    #     )
-    # )
-
+    
+    # ============================================================================
+    # STEP 2
+    # Cargar tipos de cambio Mastercard
+    # ============================================================================
     ex = (
         df_exchange_rate
         .filter(F.upper(F.col("brand")) == F.upper(F.lit(brand_fx_eval)))
         .select(
-            F.to_date("rate_date").alias("rate_date_d"),
             F.upper(F.trim(F.col("currency_from").cast("string"))).alias("currency_from_u"),
             F.upper(F.trim(F.col("currency_to").cast("string"))).alias("currency_to_u"),
             F.col("exchange_value").cast("double").alias("exchange_value_num"),
         )
-        .dropDuplicates(["rate_date_d", "currency_from_u", "currency_to_u"])
+        .dropDuplicates(["currency_from_u", "currency_to_u"])
     )   
- 
+
     ex_rule = ex.alias("ex_rule")
     ex_settle = ex.alias("ex_settle")
- 
+    
+    # ============================================================================
+    # STEP 3
+    # Obtener tipos de cambio necesarios
+    #
+    # ex_rule:
+    #   Convierte monto de transacción hacia moneda de regla.
+    #   transaction currency -> rule currency
+    #
+    # ex_settle:
+    #   Convierte fee calculado hacia moneda de settlement.
+    #   rule currency -> settlement currency
+    # ============================================================================
+
+   
     joined = (
         a.alias("a")
         .join(
-            F.broadcast(ex_rule),
-            (
-                F.upper(F.trim(F.col("ex_rule.currency_from_u").cast("string")))
-                == F.col("a.trx_currency_u")
+            F.broadcast(ex_rule),(
+                F.upper(F.trim(F.col("ex_rule.currency_from_u").cast("string")))== F.col("a.trx_currency_u")
             )
             & (
-                F.col("ex_rule.currency_to_u")
-                == F.col("a.rate_currency_u")
-            )
-            & (F.col("ex_rule.rate_date_d") == F.col("a.txn_date_d")),
+                F.col("ex_rule.currency_to_u") == F.col("a.rate_currency_u")
+            ),
             "left",
         )
         .join(
             F.broadcast(ex_settle),
             (
-                F.upper(F.trim(F.col("ex_settle.currency_from_u").cast("string")))
-                == F.col("a.rate_currency_u")
+                F.upper(F.trim(F.col("ex_settle.currency_from_u").cast("string"))) == F.col("a.rate_currency_u")
             )
             & (
-                F.col("ex_settle.currency_to_u")
-                == F.col("a.settlement_currency_u")
-            )
-            & (F.col("ex_settle.rate_date_d") == F.col("a.txn_date_d")),
+                F.col("ex_settle.currency_to_u") == F.col("a.settlement_currency_u")
+            ),
             "left",
         )
     )
- 
+
+    # ============================================================================
+    # STEP 4
+    # Calcular FX para convertir el monto de la transacción
+    # hacia la moneda de la regla
+    # ============================================================================
+    
     fx_multiplier = (
         F.when(
             F.col("a.rate_currency_u").isNull()
@@ -770,12 +822,26 @@ def calculate_mastercard_fee_pyspark(
     )
  
     amount_converted = F.col("a.amount_transaction_num") * fx_multiplier
- 
+
+    # ============================================================================
+    # STEP 5
+    # Calcular fee preliminar
+    #
+    # fee = (amount * variable_rate) + fixed_rate
+    # ============================================================================
+    
     fee_preliminary = (
         F.coalesce(F.col("a.rate_variable_num"), F.lit(0.0)) * amount_converted
         + F.coalesce(F.col("a.rate_fixed_num"), F.lit(0.0))
     )
- 
+
+    # ============================================================================
+    # STEP 6
+    # Aplicar restricciones de la regla
+    #
+    # fee_final = min(rate_cap, max(rate_min, fee))
+    # ============================================================================
+    
     calculated_fee = (
         F.when(
             F.col("a.rate_variable").isNull(),
@@ -800,7 +866,14 @@ def calculate_mastercard_fee_pyspark(
             )
         )
     )
- 
+
+
+     # ============================================================================
+    # STEP 7
+    # Obtener FX para convertir fee desde
+    # rule currency -> settlement currency
+    # ============================================================================
+    
     fx_rule_to_settlement = (
         F.when(
             F.col("a.settlement_currency_u").isNull()
@@ -812,6 +885,11 @@ def calculate_mastercard_fee_pyspark(
         )
         .otherwise(F.col("ex_settle.exchange_value_num"))
     )
+
+    # ============================================================================
+    # STEP 8
+    # Convertir fee final a settlement currency
+    # ============================================================================
  
     calculated_fee_settlement = (
         F.when(calculated_fee.isNull(), F.lit(None).cast("double"))
@@ -828,7 +906,12 @@ def calculate_mastercard_fee_pyspark(
         )
         .otherwise(calculated_fee * fx_rule_to_settlement)
     )
- 
+
+    # ============================================================================
+    # STEP 9
+    # Construcción del resultado final
+    # ============================================================================
+    
     base_cols = [F.col(f"a.{c}").alias(c) for c in df_assign.columns]
  
     return (
@@ -962,46 +1045,6 @@ def build_output_file_path(
     )
 
 # =============================================================================
-# DEBUG_HELPERS
-# =============================================================================
-
-def debug_pre_eval(df_eval: DataFrame) -> None:
-    total = df_eval.count()
-    log(f"[DBG_PRE_EVAL] total rows={total}")
-
-    key_cols = [
-        "jurisdiction",
-        "ird",
-        "txn_date",
-        "processing_code",
-        "card_acceptor_business_code",
-        "gcms_product_identifier",
-        "funding_source",
-        "mastercard_assigned_id",
-        "amount_transaction",
-        "amount_transaction_currency",
-    ]
-
-    for c in key_cols:
-        bad = df_eval.filter(
-            F.col(c).isNull()
-            | (F.trim(F.col(c).cast("string")) == "")
-            | (F.upper(F.trim(F.col(c).cast("string"))) == "BLANK")
-        ).count()
-
-        log(f"[DBG_PRE_EVAL] {c}: blank/null={bad}/{total}")
-
-    df_eval.groupBy(
-        "jurisdiction",
-        "ird",
-        "txn_date",
-        "processing_code",
-        "card_acceptor_business_code",
-        "gcms_product_identifier",
-        "funding_source",
-    ).count().orderBy(F.desc("count")).show(50, truncate=False)
-    
-# =============================================================================
 # RUNNER
 # =============================================================================
 
@@ -1037,14 +1080,15 @@ def run_interchange_mti(
     calc_prefix = (f"{s3_staging}/{client_id}/MC/500_IPM_{mti}_CAL/"f"file_type={file_type}/date={file_date}/")
  
     currency_path = f"{s3_reference}/currency/"
-    exchange_rate_path = f"{s3_reference}/exchange_rate/"
+    #exchange_rate_path = f"{s3_reference}/exchange_rate/"
+    exchange_rate_path = (f"{s3_reference}/exchange_rate/"f"rate_date={file_date}/")
     rules_path = f"{s3_reference}/mc_rules/"
  
     # Salida final en STAGING, no en carpeta local.
     output_base = s3_staging.rstrip("/")
     target_subdir = f"600_IPM_{mti}_ITX"
  
-    # Para Glue:
+    # Para Glue para pruebas
     #   - deja MAX_PAIRS alto para procesar todo
     #   - si quieres probar 1 archivo, setea MAX_PAIRS=1 como env var o cambia el default temporalmente
     max_pairs = int(os.getenv("MAX_PAIRS", "999999"))
@@ -1117,7 +1161,7 @@ def run_interchange_mti(
                 df_rules=df_rules,
             )
 
-            debug_pre_eval(df_eval)
+            #debug_pre_eval(df_eval)
             
             df_assign = assign_rules_simple(
                 df_eval=df_eval,
