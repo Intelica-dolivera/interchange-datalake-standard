@@ -258,9 +258,18 @@ def store_output(
         target_s3_key = clean_s3_key.replace(cln_subdir, target_subdir)
 
         # ── Paso 1: CAL completo en RAM (pocas columnas ~50) ──────────────
+        # Leemos como Arrow primero para capturar los tipos enteros originales.
+        # pandas convierte INT64+nulls → float64 (numpy no tiene int nullable),
+        # lo que haría que el crawler detecte esas columnas como double.
         t0 = time.time()
         logger.info("Loading CAL into memory...")
-        cal_df = _read_parquet_from_s3(STAGING_BUCKET, cal_s3_key)
+        _cal_arrow = _read_parquet_arrow(STAGING_BUCKET, cal_s3_key)
+        _cal_int_cols = {
+            f.name: f.type
+            for f in _cal_arrow.schema
+            if pa.types.is_integer(f.type)
+        }
+        cal_df = _cal_arrow.to_pandas()
         if 'record' in cal_df.columns:
             cal_df = cal_df.set_index('record')
         logger.info(f"  CAL: {len(cal_df):,} rows, {len(cal_df.columns)} cols [{time.time()-t0:.1f}s]")
@@ -322,6 +331,17 @@ def store_output(
 
             # Convertir a PyArrow
             merged_table = pa.Table.from_pandas(merged)
+
+            # Restaurar tipos enteros de CAL que pandas degradó a float64.
+            # float64 Arrow → cast a INT64 preserva nulls correctamente.
+            for _col, _atype in _cal_int_cols.items():
+                if _col in merged_table.schema.names:
+                    _idx = merged_table.schema.get_field_index(_col)
+                    if merged_table.schema.field(_idx).type != _atype:
+                        merged_table = merged_table.set_column(
+                            _idx, _col,
+                            merged_table.column(_col).cast(_atype)
+                        )
 
             if writer is None:
                 # Primer batch — capturar schema como referencia

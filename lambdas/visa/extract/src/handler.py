@@ -308,6 +308,8 @@ def extract_output(
             if extracted_chunk.empty:
                 continue
 
+            extracted_chunk.insert(0, 'content_hash', content_hash)
+
             t_arrow = time.time()
             extracted_table = pa.Table.from_pandas(extracted_chunk)
             t_arrow = time.time() - t_arrow

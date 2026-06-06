@@ -351,8 +351,8 @@ Abreviaturas de marca: `vi` = Visa, `mc` = Mastercard
 | S3 Bucket | `itl-0004-itx-{env}-intchg-02-s3-{tipo}` | `itl-0004-itx-dev-intchg-02-s3-landing` |
 | DynamoDB | `itl-0004-itx-{env}-dynamo-{tabla}-02` | `itl-0004-itx-dev-dynamo-file_control-02` |
 | Layer | `itl-0004-itx-{env}-intchg-02-pandas-pyarrow` | `itl-0004-itx-dev-intchg-02-pandas-pyarrow` |
-| Step Function Visa | `itx-visa-orchestrator` | — |
-| Step Function MC | `itx-mastercard-orchestrator` | — |
+| Step Function Visa | `itl-0004-itx-dev-intchg-02-sfn-vi` | ✓ |
+| Step Function MC | `itl-0004-itx-dev-intchg-02-sfn-mc` | ✓ |
 | IAM Role Lambda | `itl-0004-itx-{env}-intchg-02-lmbd-{marca}-role` | `itl-0004-itx-dev-intchg-02-lmbd-mc-role` |
 
 ---

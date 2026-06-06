@@ -249,16 +249,18 @@ class ParquetBatchWriter:
     Escribe records a S3 como Parquet, en lotes de FLUSH_BATCH_SIZE.
 
     Schema del Parquet:
+      - content_hash (string): hash MD5 del archivo fuente
       - record (int64): índice secuencial del record (0, 1, 2, ...)
       - {columna} (string): una columna por cada TCSN o record_type posible
 
     Nunca tiene más de FLUSH_BATCH_SIZE records en memoria.
     """
 
-    def __init__(self, bucket: str, s3_key: str, columns: list):
-        self.bucket  = bucket
-        self.s3_key  = s3_key
-        self.columns = columns
+    def __init__(self, bucket: str, s3_key: str, columns: list, content_hash: str):
+        self.bucket        = bucket
+        self.s3_key        = s3_key
+        self.columns       = columns
+        self._content_hash = content_hash
 
         self._buffer = []         # records pendientes de flush
         self._total  = 0          # total acumulado
@@ -266,6 +268,7 @@ class ParquetBatchWriter:
         self._outbuf = io.BytesIO()
 
         self._schema = pa.schema([
+            pa.field("content_hash", pa.string()),
             pa.field("record", pa.int64()),
             *[pa.field(col, pa.string()) for col in columns]
         ])
@@ -291,12 +294,15 @@ class ParquetBatchWriter:
                 self._outbuf, self._schema, compression='snappy'
             )
 
-        arrays = [pa.array([r["record"] for r in self._buffer], type=pa.int64())]
+        arrays = [
+            pa.array([self._content_hash] * len(self._buffer), type=pa.string()),
+            pa.array([r["record"] for r in self._buffer], type=pa.int64()),
+        ]
         for col in self.columns:
             arrays.append(pa.array([r[col] for r in self._buffer], type=pa.string()))
 
         self._writer.write_table(
-            pa.table(dict(zip(["record"] + self.columns, arrays)))
+            pa.table(dict(zip(["content_hash", "record"] + self.columns, arrays)))
         )
 
         logger.info(f"  Flushed {len(self._buffer):,} records "
@@ -373,10 +379,10 @@ def _process_single_pass(
     }
 
     # ── Writers ──────────────────────────────────────────────────────────────
-    baseii_writer = ParquetBatchWriter(STAGING_BUCKET, baseii_key, BASEII_COLUMNS)
-    sms_writer    = ParquetBatchWriter(STAGING_BUCKET, sms_key,    SMS_COLUMNS)
+    baseii_writer = ParquetBatchWriter(STAGING_BUCKET, baseii_key, BASEII_COLUMNS, content_hash)
+    sms_writer    = ParquetBatchWriter(STAGING_BUCKET, sms_key,    SMS_COLUMNS,   content_hash)
     vss_writers   = {
-        vt: ParquetBatchWriter(STAGING_BUCKET, vss_keys[vt], VSS_COLUMNS)
+        vt: ParquetBatchWriter(STAGING_BUCKET, vss_keys[vt], VSS_COLUMNS, content_hash)
         for vt in VSS_TYPES
     }
 

@@ -696,7 +696,7 @@ def process_output(
     result = calculate_fee_amounts(result, rates_pd)
 
     interchange_cols = [
-        "record", "source_currency_code_alphabetic", "source_amount",
+        "content_hash", "record", "source_currency_code_alphabetic", "source_amount",
         "interchange_intelica_id", "interchange_fee_descriptor", "interchange_fee_currency",
         "interchange_fee_variable", "interchange_fee_fixed", "interchange_fee_min",
         "interchange_fee_cap", "interchange_fee_amount",

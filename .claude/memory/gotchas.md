@@ -97,6 +97,68 @@ Problemas encontrados durante el desarrollo, con su causa raíz y solución reco
 
 ---
 
+## glue-vi-calculate: timeliness debe ser LongType (bigint), NO IntegerType — HIVE_PARTITION_SCHEMA_MISMATCH
+
+**Archivo:** `glue/scripts/visa/calculate/calculate.py`
+**Detectado:** 2026-06-05
+
+**Problema:** Si `calc_timeliness_draft` o `calc_timeliness_sms` usan `.cast(IntegerType())`, los Parquets nuevos escriben `int` (INT32). Los archivos existentes en S3 tienen `bigint` (INT64 / LongType — resultado natural de las aritméticas con `F.floor()` + `F.datediff()`). Al re-correr el crawler, la tabla queda con tipo `int` pero las particiones viejas siguen siendo `bigint`. Athena lanza:
+```
+HIVE_PARTITION_SCHEMA_MISMATCH: column 'timeliness' declared as type 'int',
+but partition declared column 'timeliness' as type 'bigint'
+```
+
+**Solución aplicada (2026-06-05):** Usar `.cast(LongType())` para `timeliness` — tanto en `calc_timeliness_draft` como en `calc_timeliness_sms`. Todos los archivos (viejos y nuevos) quedan como `bigint`.
+
+**Si vuelve a aparecer:** Verificar que el script en S3 use `LongType()`. Si hay particiones mixtas, editar la tabla en Glue catalog y forzar `bigint` manualmente antes de re-correr el crawler.
+
+**Estado:** Resuelto.
+
+---
+
+## glue-vi-calculate: tipos explícitos en funciones de cálculo numérico
+
+**Archivo:** `glue/scripts/visa/calculate/calculate.py`
+**Detectado:** 2026-06-05
+
+**Problema:** Sin `.cast()` explícito en columnas numéricas, Spark infiere tipos que el crawler de Glue detecta incorrectamente en Athena (e.g., `double` en lugar de `int`).
+
+**Solución aplicada (2026-06-05):**
+
+| Función | Cast aplicado |
+|---------|--------------|
+| `calc_business_transaction_type_draft` | `.cast(IntegerType())` |
+| `calc_reversal_indicator_draft` | `.cast(IntegerType())` |
+| `calc_reversal_indicator_sms` | `.cast(IntegerType())` |
+| `calc_surcharge_amount` | `.cast(DoubleType())` + `F.lit(0.0)` |
+| `calc_timeliness_draft` | `.cast(LongType())` — ver gotcha anterior |
+| `calc_timeliness_sms` | `.cast(LongType())` — ver gotcha anterior |
+
+**Regla:** Toda nueva función de cálculo numérico debe terminar con `.cast(TipoExplícito)`.
+
+**Estado:** Resuelto.
+
+---
+
+## lmbd-vi-store: columnas enteras del CAL se escriben como double en operational — RESUELTO
+
+**Archivo:** `lambdas/visa/store/src/handler.py`
+**Detectado:** 2026-06-05
+
+**Problema:** El crawler de Glue detectaba `timeliness` (y cualquier otra columna `LongType`/`IntegerType` del CAL que tuviera nulls) como `double` en la capa operational, en vez de `bigint`/`int`.
+
+**Causa raíz:** `pq.read_table(...).to_pandas()` convierte automáticamente columnas INT64+nulls a `float64` (numpy no tiene tipo entero nullable). Al reconstruir la tabla con `pa.Table.from_pandas(merged)`, PyArrow infiere `double` desde `float64`. El `ParquetWriter` fija ese schema desde el primer batch y todos los archivos quedan como `double`.
+
+**Solución aplicada (2026-06-05):** En `store_output`, el CAL se lee con `_read_parquet_arrow()` (devuelve `pa.Table`) en lugar de `_read_parquet_from_s3()`. Antes de convertir a pandas, se extrae `_cal_int_cols = {nombre: tipo}` para todas las columnas enteras del schema Arrow. En cada batch del loop, después de `pa.Table.from_pandas(merged)`, se restauran los tipos enteros con `merged_table.set_column(..., col.cast(atype))`. Arrow soporta `float64 null → int64 null` sin pérdida de datos.
+
+**Por qué no se usó `use_nullable_dtypes=True`:** El layer usa una versión de PyArrow < 2.0 que no soporta ese parámetro.
+
+**Si vuelve a aparecer:** Verificar que `_cal_int_cols` se construya correctamente antes del loop. Si hay nuevas columnas enteras en el CAL que queden como double, revisar que el schema del CAL Arrow tenga `is_integer(f.type) == True` para esas columnas.
+
+**Estado:** Resuelto.
+
+---
+
 ## glue-mc-interchange: solo procesa MTIs 1240 y 1442 (1644 y 1740 excluidos)
 
 **Archivo:** `glue/scripts/mastercard/interchange/interchange.py`

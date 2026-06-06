@@ -430,10 +430,10 @@ def calc_surcharge_amount(df: DataFrame) -> DataFrame:
     return df.withColumn(
         "calc_surcharge_amount",
         F.greatest(
-            F.coalesce(F.col("surcharge_amount_df"), F.lit(0)),
-            F.coalesce(F.col("surcharge_amount_sd"), F.lit(0)),
-            F.coalesce(F.col("surcharge_amount_sp"), F.lit(0))
-        )
+            F.coalesce(F.col("surcharge_amount_df"), F.lit(0.0)),
+            F.coalesce(F.col("surcharge_amount_sd"), F.lit(0.0)),
+            F.coalesce(F.col("surcharge_amount_sp"), F.lit(0.0))
+        ).cast(DoubleType())
     )
 
 
@@ -510,7 +510,7 @@ def calc_business_transaction_type_draft(df: DataFrame) -> DataFrame:
         ).when(
             F.col("draft_code").isin(atm_codes) & (F.col("merchant_category_code") == 6011),
             F.lit(22)
-        ).otherwise(F.lit(255))
+        ).otherwise(F.lit(255)).cast(IntegerType())
     )
  
  
@@ -556,7 +556,7 @@ def calc_reversal_indicator_draft(df: DataFrame) -> DataFrame:
     reversal_codes = ["25", "26", "27", "35", "36", "37"]
     return df.withColumn(
         "calc_reversal_indicator",
-        F.when(F.col("draft_code").isin(reversal_codes), F.lit(1)).otherwise(F.lit(0))
+        F.when(F.col("draft_code").isin(reversal_codes), F.lit(1)).otherwise(F.lit(0)).cast(IntegerType())
     )
  
  
@@ -570,7 +570,7 @@ def calc_reversal_indicator_sms(df: DataFrame) -> DataFrame:
         ).when(
             F.col("request_message_type").isin(["0400", "0420"]) & (F.col("response_code") == "00"),
             F.lit(1)
-        ).otherwise(F.lit(0))
+        ).otherwise(F.lit(0)).cast(IntegerType())
     )
  
  
@@ -892,6 +892,7 @@ def calc_timeliness_draft(df: DataFrame) -> DataFrame:
         F.when(F.col("_total_days") == 0, F.lit(0))
          .when(F.col("_total_days").isNull() | F.col("_purchase_date").isNull() | F.col("_central_date").isNull(), F.lit(None))
          .otherwise(F.col("_total_days") - 1 - F.col("_sundays_count"))
+         .cast(LongType())
     )
     
     df = df.drop("_central_date", "_purchase_date", "_total_days", "_start_for_sundays", "_end_for_sundays",
@@ -905,7 +906,7 @@ def calc_timeliness_sms(df: DataFrame) -> DataFrame:
     """timeliness para SMS: settlement_date_sms - local_draft_date"""
     return df.withColumn(
         "calc_timeliness",
-        F.datediff(F.to_date(F.col("settlement_date_sms")), F.to_date(F.col("local_draft_date")))
+        F.datediff(F.to_date(F.col("settlement_date_sms")), F.to_date(F.col("local_draft_date"))).cast(LongType())
     )
 
 
@@ -1097,6 +1098,7 @@ def calculate_baseii_fields(df: DataFrame, ardef: DataFrame, country_df: DataFra
     # 8. Seleccionar output
     log_info("  Selecting final output columns...")
     output_columns = [
+        "content_hash",
         "record",
         F.col("calc_ardef_country").alias("ardef_country"),
         F.col("calc_authorization_code_valid").alias("authorization_code_valid"),
@@ -1190,6 +1192,7 @@ def calculate_sms_fields(df: DataFrame, ardef: DataFrame, country_df: DataFrame,
     # 8. Seleccionar output
     log_info("  Selecting final output columns...")
     output_columns = [
+        "content_hash",
         "record",
         F.col("calc_acquirer_bin").alias("acquirer_bin"),
         F.col("calc_ardef_country").alias("ardef_country"),
@@ -1233,6 +1236,7 @@ def calculate_vss_fields(df: DataFrame, vss_type: str) -> DataFrame:
     df = calc_vss_aggregation_level(df, vss_type)
     
     output_columns = [
+        "content_hash",
         "record",
         F.col("calc_vss_report_type").alias("vss_report_type"),
         F.col("calc_vss_aggregation_level").alias("vss_aggregation_level"),
