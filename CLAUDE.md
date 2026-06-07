@@ -241,7 +241,7 @@ lambdas/<marca>/<etapa>/
 | **Step Functions** | Orquestacion del flujo completo |
 | **S3** (5 buckets) | Data lake por capas |
 | **DynamoDB** (4 tablas) | Configuracion y control de estado |
-| **Glue** (4 jobs + 2 crawlers) | ETL pesado y catalogo de datos |
+| **Glue** (4 jobs + 8 databases + 8 crawlers) | ETL pesado y catalogo de datos — inventario completo en `glue/GLUE_CATALOG_CREATION.md` |
 | **Athena** | Consultas SQL sobre los datos finales |
 | **CloudWatch** | Logs (30 dias de retencion) |
 | **IAM** | 11 roles con permisos granulares |
@@ -336,6 +336,8 @@ Cada Glue job tiene un `args.json` junto a su script con los `DefaultArguments` 
 
 **Optimizacion vi-calculate (2026-06-02):** `load_visa_ardef` fue migrado de pandas + `toPandas()` a 100% Spark. La deduplicacion y eliminacion de rangos solapados del ARDEF ahora usa `Window.partitionBy` + `row_number()` y `F.lag()`. Eliminado `import pandas as pd` y el parametro `ardef_pd` de todas las firmas. Motivo: el `toPandas()` presionaba la heap del driver y causaba `Py4JError` en archivos grandes.
 
+**Fix vi-calculate — ARDEF en null por parseo de fechas (2026-06-06):** `load_visa_ardef` parseaba `effective_date` (string `yyyyMMdd`, ej. `'20131018'`) con `F.to_date(col)` **sin formato explicito**. Sin formato, `to_date()` espera ISO `yyyy-MM-dd` y devuelve `NULL` para el 100% de las filas — el filtro de fechas vaciaba el ARDEF completo y los 10 campos derivados del cruce (`ardef_country`, `product_id`, `funding_source`, `b2b_program_id`, `fast_funds`, `nnss_indicator`, `product_subtype`, `technology_indicator`, `travel_indicator`, `issuer_country`) salian 100% null en `calculate.parquet`, aunque el job terminaba en SUCCESS con el conteo de filas correcto. Tambien existia un pre-filtro redundante que comparaba `effective_date` (string `yyyyMMdd`) contra `file_date_str` (string `yyyy-MM-dd`) antes de convertir a `DateType` — comparacion lexicografica entre formatos distintos, igualmente incorrecta. Solucion: `F.to_date(F.col("effective_date"), "yyyyMMdd")` (mismo patron ya usado en `mastercard/calculate/calculate.py:826-829`) + eliminacion del pre-filtro de strings (el filtro real, format-agnostic, ya existia despues de convertir ambas fechas a `DateType`). Detalle completo y metodologia de deteccion en `.claude/memory/gotchas.md`.
+
 ---
 
 ## Convencion de nombres
@@ -420,7 +422,7 @@ terraform apply
 **General:**
 - `itx-lambda-extract-role`: rol IAM propio para itx-extract (actualmente comparte el del router)
 - `itx-glue-crawler-ebgr-role`: rol IAM propio para el crawler Mastercard
-- Renombrar crawlers y databases Glue con prefijo `itx-` consistente
+- Renombrar crawlers y databases Glue con prefijo `itx-` consistente — verificado 2026-06-06: los 16 objetos planeados en `glue/GLUE_CATALOG_CREATION.md` existen, pero con nombres reales que omiten `intchg` respecto al plan documentado; ademas hay 5 objetos extra (databases/crawlers `poc_*`) con una tercera convencion de nombres distinta. Detalle e inventario completo en la seccion "Estado de verificacion" de ese mismo archivo.
 - Mover scripts Glue MC de bucket `itl-0004-itx-dev-poc-02-reference/` al bucket oficial `itl-0004-itx-dev-intchg-02-s3-reference/`
 - Configurar retencion de logs en CloudWatch (variable `log_retention_days = 30` en Terraform ya esta lista)
 - Testing end-to-end en ambiente empresarial
@@ -490,3 +492,4 @@ Archivos con contexto acumulado del proyecto — decisiones tomadas y problemas 
 
 - Decisiones de arquitectura: @.claude/memory/decisions.md
 - Gotchas y problemas conocidos: @.claude/memory/gotchas.md
+- Ejecución manual / debugging paso a paso: @.claude/memory/manual_execution.md

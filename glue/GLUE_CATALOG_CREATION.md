@@ -106,3 +106,47 @@ Glue → Crawlers → seleccionar todos → **Run**
 Se pueden ejecutar en paralelo. Tardan ~2-5 min cada uno. Estado esperado al finalizar: **Ready / Succeeded**.
 
 > Las tablas solo aparecen si ya existen archivos Parquet en el path. Si un path está vacío el crawler no crea tabla — esto es normal.
+
+---
+
+## Estado de verificación (2026-06-06)
+
+Verificado contra AWS (`aws glue get-databases` / `get-crawlers --profile itx-dev`): **los 16 objetos planeados están creados**.
+
+**⚠️ Diferencia de nombres real vs. plan:** los nombres reales en AWS **omiten el segmento `intchg`** respecto a lo documentado arriba en "Objetos a crear":
+
+| | Nombre planeado (este doc) | Nombre real en AWS |
+|---|---|---|
+| Database | `itl_0004_itx_dev_**intchg**_02_glue_database_{tipo}_{cliente}_{marca}` | `itl_0004_itx_dev_02_glue_database_{tipo}_{cliente}_{marca}` |
+| Crawler | `itl_0004_itx_dev_**intchg**_02_glue_crawler_{tipo}_{cliente}_{marca}` | `itl_0004_itx_dev_02_glue_crawler_{tipo}_{cliente}_{marca}` |
+
+(El patrón real coincide con el ya usado en `.claude/memory/manual_execution.md` para `staging_ebgr_visa`.) Si se sigue esta guía para crear nuevos objetos, usar el patrón **real** (sin `intchg`) para mantener consistencia con los 16 ya creados — no el de la tabla "Objetos a crear" de este documento.
+
+### Inventario real verificado — Databases (8/8 ✓)
+
+| Database | Crawler asociado | Último estado |
+|----------|------------------|---------------|
+| `itl_0004_itx_dev_02_glue_database_operational_ebgr_visa` | `itl_0004_itx_dev_02_glue_crawler_operational_ebgr_visa` | SUCCEEDED |
+| `itl_0004_itx_dev_02_glue_database_operational_ebgr_mc` | `itl_0004_itx_dev_02_glue_crawler_operational_ebgr_mc` | SUCCEEDED |
+| `itl_0004_itx_dev_02_glue_database_operational_sbsa_visa` | `itl_0004_itx_dev_02_glue_crawler_operational_sbsa_visa` | nunca ejecutado |
+| `itl_0004_itx_dev_02_glue_database_operational_sbsa_mc` | `itl_0004_itx_dev_02_glue_crawler_operational_sbsa_mc` | nunca ejecutado |
+| `itl_0004_itx_dev_02_glue_database_staging_ebgr_visa` | `itl_0004_itx_dev_02_glue_crawler_staging_ebgr_visa` | SUCCEEDED |
+| `itl_0004_itx_dev_02_glue_database_staging_ebgr_mc` | `itl_0004_itx_dev_02_glue_crawler_staging_ebgr_mc` | SUCCEEDED |
+| `itl_0004_itx_dev_02_glue_database_staging_sbsa_visa` | `itl_0004_itx_dev_02_glue_crawler_staging_sbsa_visa` | nunca ejecutado |
+| `itl_0004_itx_dev_02_glue_database_staging_sbsa_mc` | `itl_0004_itx_dev_02_glue_crawler_staging_sbsa_mc` | nunca ejecutado |
+
+Todos los crawlers están en estado `READY` (idle). Los 4 marcados "nunca ejecutado" corresponden a SBSA — cliente sin archivos procesados aún en `s3-operational`/`s3-staging`, consistente con la nota del Paso 3 (un path vacío no genera tabla ni corrida).
+
+### Objetos NO contemplados en este plan (legado / POC — revisar si siguen siendo necesarios)
+
+Existen además, fuera de los 16 planeados aquí:
+
+| Tipo | Nombre | Asociado a | Nota |
+|------|--------|-----------|------|
+| Database | `itl_0004_itx_dev_poc_ebgr_visa_staging` | — | Prefijo `poc` — probablemente del prototipo local |
+| Database | `itl_0004_itx_dev_poc_interchange_analytics` | — | Prefijo `poc` |
+| Database | `itl_0004_itx_dev_poc_itx_reference` | `itl-0004-itx-dev-intchg-02-crawler-reference` | Prefijo `poc`, pero el crawler usa la convención corporativa con guiones e `intchg` |
+| Crawler | `itl-0004-itx-dev-intchg-02-crawler-reference` | `itl_0004_itx_dev_poc_itx_reference` | SUCCEEDED — usa convención con guiones, distinta a los 8 planeados aquí |
+| Crawler | `itl-0004-itx-dev-intchg-02-crawler-staging` | `itl_0004_itx_dev_poc_ebgr_visa_staging` | Nunca ejecutado — ídem |
+
+Estos 5 objetos adicionales usan **dos convenciones de nombres distintas** entre sí y respecto a los 16 oficiales — refuerza la necesidad de la tarea pendiente "Renombrar crawlers y databases Glue con prefijo `itx-` consistente" (ver `CLAUDE.md` → Pendientes conocidos).

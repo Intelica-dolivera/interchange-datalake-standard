@@ -4,6 +4,29 @@ Problemas encontrados durante el desarrollo, con su causa raíz y solución reco
 
 ---
 
+## glue-vi-calculate: load_visa_ardef() vaciaba el ARDEF por to_date() sin formato — campos ARDEF quedaban 100% null — RESUELTO
+
+**Archivo:** `glue/scripts/visa/calculate/calculate.py` (función `load_visa_ardef`)
+**Detectado:** 2026-06-06
+
+**Síntoma:** `calculate.parquet` se generaba correctamente (mismo Nº de filas que `clean.parquet`) pero los 10 campos derivados del cruce con ARDEF (`ardef_country`, `product_id`, `funding_source`, `b2b_program_id`, `fast_funds`, `nnss_indicator`, `product_subtype`, `technology_indicator`, `travel_indicator`, `issuer_country`) salían **100% null**.
+
+**Causa raíz:** `effective_date` en `visa_ardef/data.parquet` viene como string en formato `yyyyMMdd` (ej. `'20131018'`, las 1,710,400 filas), pero el código llamaba `F.to_date(F.col("effective_date"))` **sin especificar formato**. `to_date()` sin formato espera ISO `yyyy-MM-dd`, así que devuelve `NULL` para el 100% de las filas. El filtro posterior `effective_date <= file_date` descarta entonces TODO el ARDEF (queda vacío), y el join produce 100% nulls en los campos derivados.
+
+Adicionalmente había un pre-filtro (antes de convertir a `DateType`) que comparaba `effective_date` (string `yyyyMMdd`) directamente contra `file_date_str` (string `yyyy-MM-dd`) — comparación lexicográfica de formatos distintos, también incorrecta (cualquier dígito `'0'-'9'` > `'-'` en ASCII, así que fechas del mismo año del archivo se excluían incorrectamente).
+
+**Cómo se detectó:** Replicando `load_visa_ardef()` + el range join en pandas (`tst_files/debug_ardef_join.py`) y comparando **valor a valor** (alineado por `record`, no por posición — Spark reordena filas) contra `calculate.parquet`. El join local daba 100% match contra los 553,929 rangos ARDEF válidos; el `calculate.parquet` real tenía 100% null en esos campos — 0% de coincidencia, confirmando que el ARDEF llegaba vacío al job real.
+
+**Solución aplicada (2026-06-06):**
+1. `F.to_date(F.col("effective_date"))` → `F.to_date(F.col("effective_date"), "yyyyMMdd")` — mismo patrón ya usado correctamente en `glue/scripts/mastercard/calculate/calculate.py:826-829` (`F.to_date(_fdt_str, "yyMMdd")` / `"yyyyMMdd"` según longitud).
+2. Se eliminó el pre-filtro de strings con formatos distintos — el filtro real ya existe después de convertir ambas fechas a `DateType` (paso 3 de la función), que es format-agnostic y correcto.
+
+**Si vuelve a aparecer (campos ARDEF en null):** Verificar primero que `ardef.count()` después de `load_visa_ardef()` no sea 0 o anormalmente bajo (el log `"ARDEF loaded: {count} valid ranges..."` lo reporta). Si es 0, sospechar de un cambio de formato en `effective_date`/`valid_until` del `data.parquet` de referencia — confirmar el formato real con una muestra antes de tocar el `to_date()`.
+
+**Estado:** Resuelto — pendiente re-ejecutar `glue-vi-calculate` para regenerar `calculate.parquet` y validar con `debug_ardef_join.py` que el match sube a ~100%.
+
+---
+
 ## mc-transform: timeout con múltiples MTIs (riesgo alto)
 
 **Archivo:** `lambdas/mastercard/transform/src/handler.py`

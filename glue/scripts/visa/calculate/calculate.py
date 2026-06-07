@@ -65,20 +65,19 @@ def load_visa_ardef(reference_bucket: str, file_date: date) -> DataFrame:
     file_date_str = file_date.strftime("%Y-%m-%d") if isinstance(file_date, date) else str(file_date)
  
     # ── 1. Lectura y filtrado inicial en Spark ────────────────────────────────
-    ardef = (
-        spark.read.parquet(path)
-        .filter(F.col("delete_indicator") == " ")
-        .filter(F.col("effective_date") <= file_date_str)
-        .filter(
-            F.col("valid_until").isNull() |
-            (F.col("valid_until") == "") |
-            (F.col("valid_until") >= file_date_str)
-        )
-    )
- 
+    # Nota: el pre-filtro por fecha se removió de aquí porque effective_date
+    # viene en formato 'yyyyMMdd' (sin separadores) y valid_until en 'yyyy-MM-dd'
+    # — comparar esos strings contra file_date_str ('yyyy-MM-dd') es comparar
+    # formatos distintos (lexicográficamente incorrecto). El filtro real de
+    # fechas se aplica en el paso 3, después de convertir ambas a DateType.
+    ardef = spark.read.parquet(path).filter(F.col("delete_indicator") == " ")
+
     # ── 2. Convertir fechas y rellenar valid_until nulo con file_date ─────────
+    # effective_date viene como 'yyyyMMdd' (ej. '20131018') — requiere formato
+    # explícito porque to_date() sin formato espera ISO 'yyyy-MM-dd' y devuelve
+    # NULL para 'yyyyMMdd', vaciando el ARDEF completo tras el filtro del paso 3.
     ardef = ardef \
-        .withColumn("effective_date", F.to_date(F.col("effective_date"))) \
+        .withColumn("effective_date", F.to_date(F.col("effective_date"), "yyyyMMdd")) \
         .withColumn("valid_until",
                     F.coalesce(
                         F.to_date(F.col("valid_until")),
@@ -475,42 +474,44 @@ def calc_business_mode_sms(df: DataFrame) -> DataFrame:
     )
 
 
-def calc_business_transaction_type_draft(df: DataFrame) -> DataFrame:
+def calc_business_transaction_type_draft(df: DataFrame, file_type: str) -> DataFrame:
     """
     business_transaction_type para BASEII/draft.
     Lógica compleja basada en draft_code, MCC, usage_code, etc.
     """
     purchase_codes = ["05", "15", "25", "35"]
-    cash_codes = ["06", "16", "26", "36"]
-    atm_codes = ["07", "17", "27", "37"]
-    special_mcc = [4829, 6051, 7995]
-    
+    cash_codes     = ["06", "16", "26", "36"]
+    atm_codes      = ["07", "17", "27", "37"]
+    special_mcc    = [4829, 6051, 7995]
+
+    is_in    = F.lit(file_type == "IN")
+    dc       = F.col("draft_code")
+    mcc      = F.col("merchant_category_code")
+    usage    = F.col("usage_code")
+    sci      = F.col("special_condition_indicator_merchant_draft_indicator")
+    qualifier = F.col("draft_code_qualifier_0")
+
     return df.withColumn(
         "calc_business_transaction_type",
-        F.when(
-            F.col("draft_code").isin(purchase_codes) & ~F.col("merchant_category_code").isin(special_mcc),
-            F.lit(1)
-        ).when(
-            F.col("draft_code").isin(purchase_codes) & F.col("merchant_category_code").isin(special_mcc),
-            F.lit(3)
-        ).when(
-            F.col("draft_code").isin(cash_codes) & (F.col("usage_code") == 1) &
-            F.col("special_condition_indicator_merchant_draft_indicator").isin(["7", "8"]),
-            F.lit(20)
-        ).when(
-            F.col("draft_code").isin(cash_codes) & (F.col("usage_code") == 1) &
-            (F.col("draft_code_qualifier_0") == 2),
-            F.lit(25)
-        ).when(
-            F.col("draft_code").isin(cash_codes) & (F.col("usage_code") == 1),
-            F.lit(19)
-        ).when(
-            F.col("draft_code").isin(atm_codes) & (F.col("merchant_category_code") == 6010),
-            F.lit(21)
-        ).when(
-            F.col("draft_code").isin(atm_codes) & (F.col("merchant_category_code") == 6011),
-            F.lit(22)
-        ).otherwise(F.lit(255)).cast(IntegerType())
+        # --- IN: purchase codes ---
+        F.when(dc.isin(purchase_codes) & is_in & sci.isin(["7", "8"]),        F.lit(3))
+        .when(dc.isin(purchase_codes) & is_in & ~sci.isin(["7", "8"]),        F.lit(1))
+        # --- IN: ATM codes ---
+        .when(dc.isin(atm_codes) & is_in & (mcc == 6010),                     F.lit(21))
+        .when(dc.isin(atm_codes) & is_in & (mcc == 6011),                     F.lit(22))
+        # --- IN: cash codes ---
+        .when(dc.isin(cash_codes) & is_in & (usage == 1) & (qualifier == 2),  F.lit(25))
+        .when(dc.isin(cash_codes) & is_in & (usage == 1),                     F.lit(19))
+        # --- OUT: purchase codes ---
+        .when(dc.isin(purchase_codes) & ~is_in & ~mcc.isin(special_mcc),      F.lit(1))
+        .when(dc.isin(purchase_codes) & ~is_in & mcc.isin(special_mcc),       F.lit(3))
+        # --- OUT: ATM codes ---
+        .when(dc.isin(atm_codes) & ~is_in & (mcc == 6010),                    F.lit(21))
+        .when(dc.isin(atm_codes) & ~is_in & (mcc == 6011),                    F.lit(22))
+        # --- OUT: cash codes ---
+        .when(dc.isin(cash_codes) & ~is_in & (usage == 1) & (qualifier == 2), F.lit(25))
+        .when(dc.isin(cash_codes) & ~is_in & (usage == 1),                    F.lit(19))
+        .otherwise(F.lit(255)).cast(IntegerType())
     )
  
  
@@ -1076,7 +1077,7 @@ def calculate_baseii_fields(df: DataFrame, ardef: DataFrame, country_df: DataFra
     # 4. Lógica condicional
     log_info("  Calculating conditional fields...")
     df = calc_business_mode_draft(df, file_type)
-    df = calc_business_transaction_type_draft(df)
+    df = calc_business_transaction_type_draft(df, file_type)
     df = calc_reversal_indicator_draft(df)
     df = calc_jurisdiction_country_draft(df)
     
