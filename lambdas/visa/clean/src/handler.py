@@ -67,17 +67,61 @@ def _parse_dates(date_series: pd.Series, date_format: str, file_date: str) -> pd
     if date_format.startswith('%'):
         return pd.to_datetime(date_series, format=date_format, errors='coerce')
     if date_format == '!MMDD':
-        pre = str(reference_date.year) + date_series.astype(str)
-        pre = pd.to_datetime(pre, format="%Y%m%d", errors='coerce')
-        future_mask = pre > reference_date_ts
-        pre.loc[future_mask] = pre.loc[future_mask] - pd.DateOffset(years=1)
+        # Campos con formato Visa MMDD (mes y dia, sin anio): purchase_date.
+        #
+        # El anio se infiere comparando el MES del campo contra el MES de file_date:
+        #   MM del campo <= MM de file_date  ->  mismo anio que file_date
+        #   MM del campo >  MM de file_date  ->  anio anterior
+        #
+        # Esto respeta la regla Visa: purchase_date debe estar dentro de los 11 meses
+        # anteriores al central_processing_date. Comparar solo el mes (no la fecha completa)
+        # evita el error de restar un anio cuando el dia es 1-2 dias posterior a file_date
+        # dentro del mismo mes -- lo cual es valido porque el central_processing_date de
+        # cada transaccion puede ser ligeramente mayor al file_date del archivo.
+        #
+        # '0000' -> file_date: fecha no disponible segun spec Visa, se usa el file_date como
+        # proxy para evitar NaT en calculos posteriores (ej. timeliness).
+        s = date_series.astype(str).str.strip()
+        src_month = pd.to_numeric(s.str[:2], errors='coerce')
+        year = pd.Series(
+            reference_date.year - (src_month > reference_date.month).astype(int),
+            index=s.index,
+        )
+        pre = pd.to_datetime(year.astype(str) + s, format="%Y%m%d", errors='coerce')
+        pre[s == '0000'] = reference_date_ts
         return pre
     if date_format == '!YDDD':
-        pre = str(reference_date.year)[2] + date_series.astype(str)
-        pre = pd.to_datetime(pre, format="%y%j", errors='coerce')
+        # Campos con formato Visa YDDD (ultimo digito del anio + dia juliano):
+        # central_processing_date y account_reference_number_date.
+        #
+        # El anio completo se reconstruye como: decada_de(file_date) + digito Y del campo.
+        # Ejemplo: file_date=2026-01-03, campo='6004' -> '2' + '6004' -> parse '%y%j'
+        #          -> anio=26 -> 2026, dia=4 -> 2026-01-04.
+        #
+        # No se aplica ninguna correccion posterior aunque el resultado sea mayor a file_date,
+        # porque estos campos pueden ser legitimamente 1-2 dias posteriores al file_date
+        # (el VIC procesa transacciones en dias consecutivos dentro del mismo archivo).
+        #
+        # '0000' -> file_date: valor invalido YDDD, se usa la fecha del archivo como proxy.
+        s = date_series.astype(str).str.strip()
+        pre = pd.to_datetime(str(reference_date.year)[2] + s, format="%y%j", errors='coerce')
+        pre[s == '0000'] = reference_date_ts
+        return pre
+    if date_format == '!YDDD_MAX':
+        # Identico a !YDDD con una unica consideracion adicional: la fecha resultante
+        # no puede ser posterior a file_date (aplica a conversion_date, que contiene la
+        # fecha del archivo de tasas usado -- un archivo de tasas del futuro es imposible).
+        #
+        # Si el resultado supera file_date se resta 1 anio para obtener la fecha correcta.
+        # Ejemplo: file_date=2026-01-03 (dia 3), campo='6004' (dia 4) -> decodifica 2026-01-04
+        #          -> 2026-01-04 > 2026-01-03 -> restar 1 anio -> 2025-01-04.
+        #
+        # '0000' -> file_date: consistente con el resto de campos YDDD.
+        s = date_series.astype(str).str.strip()
+        pre = pd.to_datetime(str(reference_date.year)[2] + s, format="%y%j", errors='coerce')
         future_mask = pre > reference_date_ts
-        pre.loc[future_mask] = pre.loc[future_mask] - pd.DateOffset(years=10)
-        pre.loc[date_series.astype(str) == "0000"] = reference_date_ts
+        pre.loc[future_mask] = pre.loc[future_mask] - pd.DateOffset(years=1)
+        pre[s == '0000'] = reference_date_ts
         return pre
     if date_format == '!YYYYDDD':
         def parse_yyyy_ddd(ds):

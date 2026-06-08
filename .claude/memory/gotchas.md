@@ -4,6 +4,49 @@ Problemas encontrados durante el desarrollo, con su causa raíz y solución reco
 
 ---
 
+## glue-vi-interchange: content_hash se perdía en el Parquet ITX por mapInPandas — RESUELTO (pendiente validar tras re-run)
+
+**Archivo:** `glue/scripts/visa/interchange/interchange.py` (función `evaluate_interchange_fees`)
+**Detectado:** 2026-06-08
+
+**Síntoma:** El usuario reportó que `content_hash` no aparecía en el Parquet de interchange (`itx.parquet`), aunque la columna sí figura en `interchange_cols` (lista de columnas finales de `process_output`).
+
+**Causa raíz:** `evaluate_interchange_fees()` usa `mapInPandas()`, que **reemplaza por completo el schema** del DataFrame — cualquier columna no declarada explícitamente en `OUTPUT_COLS` y `output_schema` se descarta silenciosamente, sin error. `content_hash` SÍ llega como columna de entrada (viene de `cln_df`/`merged`, propagado desde transform→clean→calculate — ver `decisions.md` → "Por qué se agrega content_hash..."), pero `OUTPUT_COLS`/`output_schema` no lo declaraban, así que `yield result_pdf[OUTPUT_COLS]` lo eliminaba antes de que existiera en `result`. Luego `existing_cols = [c for c in interchange_cols if c in result.columns]` lo filtraba sin avisar — el job terminaba en SUCCESS, conteo correcto, pero sin la columna.
+
+**Solución aplicada (2026-06-08):**
+1. Agregado `"content_hash"` como primer elemento de `OUTPUT_COLS` (línea ~535)
+2. Agregado `StructField("content_hash", StringType(), True)` como primer campo de `output_schema` (línea ~584)
+
+**Si vuelve a aparecer (columna ausente en el Parquet final pese a estar en la lista de columnas finales):** sospechar de un `mapInPandas`/`applyInPandas` intermedio que reemplaza el schema — verificar que la columna esté declarada tanto en la lista de salida del iterador como en el `StructType` del schema, no solo en la selección final.
+
+**Estado:** Resuelto en código y subido a S3 (`s3://itl-0004-itx-dev-intchg-02-s3-reference/glue/scripts/visa/interchange.py`, 2026-06-08). Pendiente re-ejecutar `glue-vi-interchange` y validar que `content_hash` aparece como primera columna del `itx.parquet` resultante.
+
+---
+
+## glue-vi-interchange: _apply_default() destruía el token "Space" (espacio literal) — transacciones GR caían en regla fallback — RESUELTO (pendiente validar tras re-run)
+
+**Archivo:** `glue/scripts/visa/interchange/interchange.py` (función `_apply_default`)
+**Detectado:** 2026-06-08
+
+**Síntoma:** Transacciones de Grecia (GR) con `acceptance_terminal_indicator` = espacio literal (`' '`) no matcheaban la regla `intelica_id=39` ("GR SECURE CR", criterio `acceptance_terminal_indicator='Space,9'`) — caían en la regla fallback/default `intelica_id=63` ("GR NON-SEC CR", `program_default='Y'`).
+
+**Causa raíz:** En `_apply_default()`, dentro del loop que parsea `value_list` había un `value = value.strip()` extra que **no existe** en la versión validada del prototipo local (`tst_files/interchange_local.py` → `_apply_condition_default`). Para el criterio `"Space,9"`:
+- Tras `replace("SPACE", " ")` + `split(",")`: `[' ', '9']`
+- Con el `.strip()` extra: `' '` se convierte en `''` → `valid_values = ['', '9']`
+- Como `acceptance_terminal_indicator` está en `COLUMN_GROUP_SPACE` (su valor de transacción se conserva como `' '` literal, sin normalizar/strip), el filtro `_normalized.isin(valid_values)` excluye toda transacción con `' '` porque `' ' not in ['', '9']`
+
+**Cómo se detectó:** Comparación línea por línea de `_apply_default` (Glue) vs `_apply_condition_default` (local) — la única diferencia relevante era ese `.strip()` extra. Se confirmó vía regex sobre `tst_files/visa_rules.parquet` que **ningún criterio real contiene comas seguidas de espacio** — el `.strip()` no tenía caso de uso legítimo, era código incidental que introdujo la regresión.
+
+**Validación contra producción:** En el operational `D44C4427AED04C1E078AA86B275060FA.parquet` (jurisdiction_assigned=GR, 206,718 filas), 21,085 transacciones con `acceptance_terminal_indicator=' '` cayeron en la regla fallback 63. De ellas, **524 cumplían absolutamente TODAS las demás condiciones de la regla 39** (transaction_code, transaction_code_qualifier, account_funding_source, product_id, authorization_code, timeliness, pos_environment_code, pos_terminal_capability, pos_entry_mode, cardholder_id_method, authorization_response_code, reimbursement_attribute) — prueba directa de mala clasificación (`fee_descriptor='GR NON-SEC CR'` en vez de `'GR SECURE CR'`) causada únicamente por este bug.
+
+**Solución aplicada (2026-06-08):** Eliminado `value = value.strip()` (línea 300) — alineando `_apply_default` con el comportamiento ya validado de `_apply_condition_default` del prototipo local.
+
+**Si vuelve a aparecer (criterios "Space"/espacio literal no matchean):** verificar que ningún `.strip()` o normalización adicional se aplique a los valores de `value_list` después del `replace("SPACE", " ")` — el espacio literal debe sobrevivir intacto hasta el `isin()`.
+
+**Estado:** Resuelto en código y subido a S3 (`s3://itl-0004-itx-dev-intchg-02-s3-reference/glue/scripts/visa/interchange.py`, 2026-06-08). Pendiente re-ejecutar `glue-vi-interchange` y validar que las transacciones GR con `acceptance_terminal_indicator=' '` que cumplen el resto de condiciones de la regla 39 ahora obtienen `interchange_intelica_id=39` (antes: 63).
+
+---
+
 ## glue-vi-calculate: load_visa_ardef() vaciaba el ARDEF por to_date() sin formato — campos ARDEF quedaban 100% null — RESUELTO
 
 **Archivo:** `glue/scripts/visa/calculate/calculate.py` (función `load_visa_ardef`)
@@ -192,3 +235,55 @@ but partition declared column 'timeliness' as type 'bigint'
 **Impacto en mc-store:** `MTIS_WITH_ITX = frozenset({"1240", "1442"})` — el store no intentará buscar `600_IPM_1644_ITX` ni `600_IPM_1740_ITX`, lo que es correcto.
 
 **Estado:** Por diseño. No es un bug. Ver decisión en `decisions.md` sobre por qué no se contrasta contra 1644.
+
+---
+
+## lmbd-vi-clean: _parse_dates() lógica incorrecta para campos de fecha YDDD y MMDD — RESUELTO
+
+**Archivo:** `lambdas/visa/clean/src/handler.py` (función `_parse_dates`)
+**Detectado:** 2026-06-08
+
+**Síntoma 1 — `central_processing_date` / `account_reference_number_date` con valores ≈ -10 años:**
+La lógica anterior `!YDDD` usaba "compute-then-correct": construir fecha tentativa (`decade + Y + DDD`) y si resultado > `file_date` → restar **10 años**. Para `campo='6004'` con `file_date=2026-01-03`: decodifica → `2026-01-04` > `2026-01-03` → resta 10 años → **2016-01-04**. Esto causaba `timeliness` del orden `-3653` días (≈ -10 años) en ~14% de los registros.
+
+**Síntoma 2 — `purchase_date` retrocedía 1 año cuando debería conservar el año actual:**
+La lógica anterior prepend año de `file_date`, y si resultado > `file_date` → restaba 1 año. Para `campo='0104'` (4-ene) con `file_date=2026-01-03`: `2026-01-04 > 2026-01-03` → restaba 1 año → **2025-01-04** (incorrecto). Causa: `purchase_date` usa formato MMDD y puede ser 1-2 días posterior al `file_date` dentro del mismo mes (el VIC procesa en días consecutivos). La spec Visa no prohíbe eso.
+
+**Síntoma 3 — `conversion_date` aparecía con fecha futura (+1 año respecto al valor correcto):**
+Misma lógica `!YDDD` sin restricción decodificaba `campo='6004'` como `2026-01-04`, cuando el correcto es **2025-01-04**. `conversion_date` es la fecha del archivo de tasas usado — una tasa del futuro es imposible según la spec Visa.
+
+**Causa raíz:** La estrategia "compute-then-correct" (restar años si el resultado es futuro) es incorrecta para todos los casos. Los campos YDDD pueden legítimamente superar `file_date` en 1-2 días (VIC multi-día), y `purchase_date` MMDD no debe compararse por fecha completa sino solo por mes.
+
+**Solución aplicada (2026-06-08):** Reescritura completa de `_parse_dates()` con tres estrategias derivadas de la spec Visa y del sistema legacy (adapters.py):
+
+| Formato | Campos | Estrategia |
+|---------|--------|-----------|
+| `!YDDD` | `central_processing_date`, `account_reference_number_date` | `decade_of(file_date) + Y + DDD`, parsea `%y%j`. Sin corrección posterior — el resultado puede ser mayor a `file_date`. |
+| `!YDDD_MAX` | `conversion_date` | Idéntico a `!YDDD` + cap: si resultado > `file_date` → restar 1 año. |
+| `!MMDD` | `purchase_date` | Infiere año comparando **solo el mes**: `MM_campo <= MM_file_date` → mismo año; `MM_campo > MM_file_date` → año anterior. |
+
+Todos los formatos: `'0000'` → `file_date` (proxy para evitar `NaT` en cálculos de `timeliness`).
+
+**DynamoDB actualizado (2026-06-08):** `itl-0004-itx-dev-dynamo-visa_fields-02`, registro `type_record=draft / column_name=conversion_date` → `date_format` cambiado de `!YDDD` a `!YDDD_MAX`.
+
+**Esquema real de claves de `visa_fields-02`:** HASH=`type_record`, RANGE=`column_name` (la documentación en CLAUDE.md decía `field_id` — error de documentación; la tabla tiene un GSI `type-record-index` que el código usa para queries).
+
+**Validación completa vs PostgreSQL legacy (file_date=2026-01-03, 553,929 registros BASEII):**
+```
+purchase_date            !MMDD        2026-01-04    52502    52502  OK
+purchase_date            !MMDD        2026-01-03    92346    92346  OK
+conversion_date          !YDDD_MAX    2025-01-04    86519    86519  OK
+conversion_date          !YDDD_MAX    2025-01-05   106026   106026  OK
+central_processing_date  !YDDD        2026-01-04    86850    86850  OK
+central_processing_date  !YDDD        2026-01-05   109105   109105  OK
+account_ref_number_date  !YDDD        2026-01-04    77178    77178  OK
+account_ref_number_date  !YDDD        2026-01-05    12607    12607  OK
+```
+0 nulls en todos los campos, 100% coincidencia con legacy.
+
+**Si vuelven a aparecer fechas con año incorrecto en campos de fecha Visa:**
+- `timeliness` ≈ ±3650 → alguna copia antigua del handler con la lógica "restar 10 años" — verificar que el deployment apunta al código correcto
+- `purchase_date` un año atrás → revisar que la comparación sea solo por mes (`src_month > reference_date.month`), no por fecha completa
+- `conversion_date` un año adelante → verificar `date_format=!YDDD_MAX` en DynamoDB y que el código aplique `future_mask`
+
+**Estado:** Resuelto — `handler.py` subido al Lambda `lmbd-vi-clean` por el usuario (2026-06-08). Script de validación: `tst_files/debug_clean_dates.py`.

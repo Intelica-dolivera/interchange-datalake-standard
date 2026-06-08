@@ -4,10 +4,10 @@
     "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-vi-exchange-rates-role",
     "CodeSize": 0,
     "Description": "Final Settings",
-    "Timeout": 540,
+    "Timeout": 900,
     "MemorySize": 2048,
-    "LastModified": "2026-06-02T21:03:22.000+0000",
-    "CodeSha256": "73c5a9e90180d10ef1705aa9d3edc1fd1c9366bf8bea801374d49380e307afc6",
+    "LastModified": "2026-06-04T19:15:44.000+0000",
+    "CodeSha256": "243c45a3f490001e3bb1b49310c569dbb0975e6c9cf6ebe760baa7640f287c0b",
     "Version": "$LATEST",
     "VpcConfig": {
         "SubnetIds": [
@@ -23,11 +23,9 @@
     "TracingConfig": {
         "Mode": "PassThrough"
     },
-    "RevisionId": "0de4ae4e-88bc-48d2-a786-5e97386c0f69",
+    "RevisionId": "02cebe73-a298-41f3-8aa2-5fa90d98927c",
     "State": "Active",
-    "LastUpdateStatus": "InProgress",
-    "LastUpdateStatusReason": "The function is being created.",
-    "LastUpdateStatusReasonCode": "Creating",
+    "LastUpdateStatus": "Successful",
     "PackageType": "Image",
     "Architectures": [
         "x86_64"

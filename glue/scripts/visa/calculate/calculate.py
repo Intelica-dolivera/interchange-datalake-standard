@@ -451,15 +451,15 @@ def calc_business_mode_draft(df: DataFrame, file_type: str) -> DataFrame:
     if file_type == "OUT":
         return df.withColumn(
             "calc_business_mode",
-            F.when(F.col("draft_code").isin(acquiring_codes_out), F.lit("Acquiring"))
-             .when(F.col("draft_code").isin(issuing_codes_out), F.lit("Issuing"))
+            F.when(F.col("draft_code").isin(acquiring_codes_out), F.lit("ACQUIRING"))
+             .when(F.col("draft_code").isin(issuing_codes_out), F.lit("ISSUING"))
              .otherwise(F.lit(""))
         )
     else:  # IN
         return df.withColumn(
             "calc_business_mode",
-            F.when(F.col("draft_code").isin(acquiring_codes_out), F.lit("Issuing"))
-             .when(F.col("draft_code").isin(issuing_codes_out), F.lit("Acquiring"))
+            F.when(F.col("draft_code").isin(acquiring_codes_out), F.lit("ISSUING"))
+             .when(F.col("draft_code").isin(issuing_codes_out), F.lit("ACQUIRING"))
              .otherwise(F.lit(""))
         )
 
@@ -468,8 +468,8 @@ def calc_business_mode_sms(df: DataFrame) -> DataFrame:
     """business_mode para SMS basado en issuer_acquirer_indicator."""
     return df.withColumn(
         "calc_business_mode",
-        F.when(F.col("issuer_acquirer_indicator") == "A", F.lit("Acquiring"))
-         .when(F.col("issuer_acquirer_indicator") == "I", F.lit("Issuing"))
+        F.when(F.col("issuer_acquirer_indicator") == "A", F.lit("ACQUIRING"))
+         .when(F.col("issuer_acquirer_indicator") == "I", F.lit("ISSUING"))
          .otherwise(F.lit(""))
     )
 

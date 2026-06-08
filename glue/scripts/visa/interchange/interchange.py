@@ -297,7 +297,6 @@ def _apply_default(
     not_valid_values = []
 
     for value in value_list:
-        value = value.strip()
         filled_range = []
         if "-" in value and not value.startswith("-"):
             try:
@@ -533,7 +532,7 @@ def evaluate_interchange_fees(
 
     # Las columnas que necesitamos para calculate_fee_amounts y el select final
     OUTPUT_COLS = [
-        "record", "source_currency_code_alphabetic", "source_amount",
+        "content_hash", "record", "source_currency_code_alphabetic", "source_amount",
         "interchange_region_country_code", "interchange_intelica_id",
         "interchange_fee_descriptor", "interchange_fee_currency",
         "interchange_fee_variable", "interchange_fee_fixed",
@@ -582,6 +581,7 @@ def evaluate_interchange_fees(
     # Schema INDEPENDIENTE — solo describe lo que el iterador yields
     # No extender transactions.schema que causa el AnalysisException
     output_schema = StructType([
+        StructField("content_hash",                    StringType(), True),
         StructField("record",                          LongType(),   True),
         StructField("source_currency_code_alphabetic", StringType(), True),
         StructField("source_amount",                   DoubleType(), True),

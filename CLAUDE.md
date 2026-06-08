@@ -95,7 +95,7 @@ Genera Parquet en `s3-staging/extract/`.
 
 **3. Clean** (`lmbd-vi-clean`)
 Con ayuda de la tabla `visa_fields` en DynamoDB, normaliza y formatea campos.
-Ejemplo: fecha juliana (YYDDD) → `YYYY-MM-DD`.
+Formatos de fecha soportados: `!YDDD` (central_processing_date, account_reference_number_date — digito de año + julian day, sin corrección posterior), `!YDDD_MAX` (conversion_date — igual que `!YDDD` pero con cap en file_date, ya que una tasa futura es imposible), `!MMDD` (purchase_date — año inferido por comparación de mes), `!YYYYDDD`. Todos mapean `'0000'` → `file_date`.
 Genera Parquet en `s3-staging/clean/`. Este es el Parquet con los campos originales en su forma final correcta.
 
 **4. Calculate** (`glue-vi-calculate`)
@@ -272,7 +272,7 @@ Patron de nomenclatura: `itl-0004-itx-{env}-dynamo-{tabla}-02`
 |-----------------------|----|-----------|
 | `itl-0004-itx-dev-dynamo-file_control-02` | `file_id` | Tracking de archivos procesados (~55 items) |
 | `itl-0004-itx-dev-dynamo-file_pattern-02` | `pattern_id` | Patrones regex para detectar tipo de archivo; incluye campos `file_block` e `interpreter_fix` para MC |
-| `itl-0004-itx-dev-dynamo-visa_fields-02` | `field_id` | Definicion de campos Visa por tipo de archivo (~430 items) |
+| `itl-0004-itx-dev-dynamo-visa_fields-02` | `type_record` (HASH) + `column_name` (RANGE) | Definicion de campos Visa por tipo de archivo (~430 items); GSI `type-record-index` usado por lmbd-vi-clean |
 | `itl-0004-itx-dev-dynamo-mastercard_fields-02` | `type_record` | Definicion de DEs y PDS Mastercard por MTI (type_record: DE o PDS) |
 | `itl-0004-itx-dev-dynamo-client-02` | `client_id` | Catalogo de clientes; incluye encoding MC por direccion (`file_mc_encoding_in`, `file_mc_encoding_out`) |
 
@@ -337,6 +337,10 @@ Cada Glue job tiene un `args.json` junto a su script con los `DefaultArguments` 
 **Optimizacion vi-calculate (2026-06-02):** `load_visa_ardef` fue migrado de pandas + `toPandas()` a 100% Spark. La deduplicacion y eliminacion de rangos solapados del ARDEF ahora usa `Window.partitionBy` + `row_number()` y `F.lag()`. Eliminado `import pandas as pd` y el parametro `ardef_pd` de todas las firmas. Motivo: el `toPandas()` presionaba la heap del driver y causaba `Py4JError` en archivos grandes.
 
 **Fix vi-calculate — ARDEF en null por parseo de fechas (2026-06-06):** `load_visa_ardef` parseaba `effective_date` (string `yyyyMMdd`, ej. `'20131018'`) con `F.to_date(col)` **sin formato explicito**. Sin formato, `to_date()` espera ISO `yyyy-MM-dd` y devuelve `NULL` para el 100% de las filas — el filtro de fechas vaciaba el ARDEF completo y los 10 campos derivados del cruce (`ardef_country`, `product_id`, `funding_source`, `b2b_program_id`, `fast_funds`, `nnss_indicator`, `product_subtype`, `technology_indicator`, `travel_indicator`, `issuer_country`) salian 100% null en `calculate.parquet`, aunque el job terminaba en SUCCESS con el conteo de filas correcto. Tambien existia un pre-filtro redundante que comparaba `effective_date` (string `yyyyMMdd`) contra `file_date_str` (string `yyyy-MM-dd`) antes de convertir a `DateType` — comparacion lexicografica entre formatos distintos, igualmente incorrecta. Solucion: `F.to_date(F.col("effective_date"), "yyyyMMdd")` (mismo patron ya usado en `mastercard/calculate/calculate.py:826-829`) + eliminacion del pre-filtro de strings (el filtro real, format-agnostic, ya existia despues de convertir ambas fechas a `DateType`). Detalle completo y metodologia de deteccion en `.claude/memory/gotchas.md`.
+
+**Fix vi-interchange — content_hash perdido + token "Space" destruido (2026-06-08):** (1) `evaluate_interchange_fees()` usa `mapInPandas()` que reemplaza el schema completo — `content_hash` no estaba en `OUTPUT_COLS`/`output_schema` y se descartaba silenciosamente. Solucion: agregado como primer elemento de ambos. (2) `_apply_default()` tenia un `value.strip()` extra dentro del loop de parseo de `value_list` que convertia el espacio literal `' '` en `''`, impidiendo que transacciones GR con `acceptance_terminal_indicator=' '` matchearan la regla `intelica_id=39` (GR SECURE CR) y cayeran en el fallback 63 (GR NON-SEC CR). Solucion: eliminado el `.strip()` extra. Validado contra 524 transacciones GR mal clasificadas. Detalle en `.claude/memory/gotchas.md`.
+
+**Fix vi-clean — _parse_dates logica incorrecta para campos de fecha YDDD/MMDD (2026-06-08):** La logica "compute-then-correct" (restar N años si resultado > file_date) era incorrecta para todos los formatos de fecha Visa: `!YDDD` restaba 10 años innecesariamente (causando timeliness ≈ -3653); `!MMDD` comparaba fecha completa en vez de solo el mes (purchase_date retrocedia 1 año cuando no correspondia); conversion_date necesitaba un nuevo formato `!YDDD_MAX` (igual que `!YDDD` pero con cap en file_date). Reescritura completa de `_parse_dates()` con las tres estrategias correctas. DynamoDB actualizado: conversion_date en type_record=draft cambiado de `!YDDD` a `!YDDD_MAX`. Detalle y validacion completa en `.claude/memory/gotchas.md`.
 
 ---
 
