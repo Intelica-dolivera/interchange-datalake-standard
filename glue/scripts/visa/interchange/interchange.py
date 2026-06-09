@@ -313,7 +313,7 @@ def _apply_default(
     if condition_name in COLUMN_GROUP_SPACE:
         batch["_normalized"] = batch[condition_name].astype(str)
     else:
-        temp = batch[condition_name].astype(str).str.strip()
+        temp = batch[condition_name].fillna("").astype(str).str.strip()
         temp = temp.mask(temp.str.len() == 0, "BLANK")
         batch["_normalized"] = temp
 
@@ -569,10 +569,10 @@ def evaluate_interchange_fees(
                 result_pdf["interchange_fee_fixed"].fillna(0.0).astype(float)
             )
             result_pdf["interchange_fee_min"] = (
-                result_pdf["interchange_fee_min"].fillna(0.0).astype(float)
+                result_pdf["interchange_fee_min"].astype(float)
             )
             result_pdf["interchange_fee_cap"] = (
-                result_pdf["interchange_fee_cap"].fillna(0.0).astype(float)
+                result_pdf["interchange_fee_cap"].astype(float)
             )
 
             #Yield SOLO las columnas esenciales — no pasar las 252 columnas

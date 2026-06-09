@@ -34,29 +34,29 @@ Contenido
 """
 
 from __future__ import annotations
-
+ 
 import uuid
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-
+ 
+ 
 from time import perf_counter
-
+ 
 from collections import defaultdict
 from typing import  Dict, Iterable, Union, cast
 from enum import StrEnum, auto
 import boto3
-
+ 
 from pathlib import Path
-
+ 
 import gc
-
+ 
 from boto3.dynamodb.conditions import Key
-
+ 
 import os
 import io
 import json
-
+ 
 import pandas as pd
 import logging
 import os
@@ -64,9 +64,9 @@ import sys
 import re
 
 LOG_LEVEL = os.environ.get("ITX_LOG_LEVEL", "INFO").upper()
-
+ 
 _MTI_FROM_KEY_RE = re.compile(r"/\d+_IPM_(\d{4})_\w+/")
-
+ 
 logging.basicConfig(
     level=LOG_LEVEL,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -80,20 +80,20 @@ class Database:
     """
     Class to handle DynamoDB read operations.
     """
-
+ 
     def __init__(self):
         self.dynamodb = boto3.resource("dynamodb")
-
+ 
         self.client_table_name = os.environ.get(
             "DDB_CLIENT_TABLE",
             "itl-000|4-itx-dev-dynamo-client-02"
         )
-
+ 
         self.file_control_table_name = os.environ.get(
             "DDB_FILE_CONTROL_TABLE",
             "itl-0004-itx-dev-dynamo-file_control-02"
         )
-
+ 
         self.mastercard_fields_table_name = os.environ.get(
             "DDB_MASTERCARD_FIELDS_TABLE",
             "itl-0004-itx-dev-dynamo-mastercard_fields-02"
@@ -105,41 +105,41 @@ class Database:
         fields: list[str],
         where: dict | None = None,
     ) -> pd.DataFrame:
-
+ 
         where = where or {}
-
+ 
         if table_name == "client":
             if "client_id" not in where:
                 raise ValueError("Falta client_id para consultar tabla client")
-
+ 
             table = self.dynamodb.Table(self.client_table_name)
-
+ 
             response = table.get_item(
                 Key={
                     "client_id": where["client_id"]
                 }
             )
-
+ 
         elif table_name == "file_control":
             if "file_id" not in where:
                 raise ValueError("Falta file_id para consultar tabla file_control")
-
+ 
             table = self.dynamodb.Table(self.file_control_table_name)
-
+ 
             response = table.get_item(
                 Key={
                     "file_id": where["file_id"]
                 }
             )
-
+ 
         else:
             raise ValueError(f"Tabla no soportada: {table_name}")
-
+ 
         item = response.get("Item")
-
+ 
         if not item:
             return pd.DataFrame(columns=fields)
-
+ 
         return pd.DataFrame(
             [[item.get(field) for field in fields]],
             columns=fields
@@ -149,91 +149,91 @@ class Database:
         self,
         mti: str,
     ) -> tuple[dict, dict]:
-
+ 
         if mti in _layout_cache:
             return _layout_cache[mti]
-
+ 
         table = self.dynamodb.Table(self.mastercard_fields_table_name)
-
+ 
         groups: dict[tuple[str, int], list[tuple[int, int]]] = defaultdict(list)
-
+ 
         for type_record in ("DE", "PDS"):
-
+ 
             items = []
             query_kwargs = {
                 "KeyConditionExpression": Key("type_record").eq(type_record)
             }
-
+ 
             while True:
-
+ 
                 response = table.query(**query_kwargs)
-
+ 
                 items.extend(response.get("Items", []))
-
+ 
                 if "LastEvaluatedKey" not in response:
                     break
-
+ 
                 query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
-
+ 
             for item in items:
                 type_mti = str(item.get("type_mti", "")).strip()
-
+ 
                 if type_mti:
                     valid_mtis = [
                         x.strip()
                         for x in type_mti.split(",")
                         if x.strip()
                     ]
-
+ 
                     if mti not in valid_mtis:
                         continue
-
+ 
                 tag = int(item["tag"])
                 subfield = int(item["subfield"])
                 length = int(item["length"])
-
+ 
                 groups[(type_record, tag)].append(
                     (subfield, length)
                 )
-
+ 
         dict_de: dict = {}
         dict_pds: dict = {}
-
+ 
         for (type_record, tag), entries in sorted(
             groups.items(),
             key=lambda x: (x[0][0], x[0][1])
         ):
             field_key = f"{type_record}_{tag}"
             target = dict_de if type_record == "DE" else dict_pds
-
+ 
             sub_entries = [
                 (subfield, length)
                 for subfield, length in entries
                 if subfield != 0
             ]
-
+ 
             top_entries = [
                 (subfield, length)
                 for subfield, length in entries
                 if subfield == 0
             ]
-
+ 
             if sub_entries:
                 target[field_key] = {
                     f"{type_record}_{tag}_{subfield}": length
                     for subfield, length in sorted(sub_entries)
             }
-
+ 
             elif top_entries:
                 target[field_key] = top_entries[0][1]
-
+ 
         _layout_cache[mti] = (dict_de, dict_pds)
-
+ 
         logging.info(
             f"Layout MTI={mti}: "
             f"{len(dict_de)} DE, {len(dict_pds)} PDS"
         )
-
+ 
         return dict_de, dict_pds
   
 class _Layer(StrEnum):
@@ -250,28 +250,28 @@ class FileStorage:
     Class to handle all file I/O operations.
     """
     Layer = _Layer
-
+ 
     def __init__(self) -> None:
         self.s3 = boto3.client("s3")
-
+ 
     def _get_bucket_by_layer(self, layer: _Layer) -> str:
         if layer == self.Layer.LANDING:
             return os.environ.get("S3_LANDING_BUCKET", "itl-0004-itx-dev-poc-02-landing")
-
+ 
         if layer == self.Layer.STAGING:
             return os.environ.get("S3_STAGING_BUCKET","itl-0004-itx-dev-poc-02-staging")
-
+ 
         if layer == self.Layer.OPERATIONAL:
             return os.environ.get("S3_OPERATIONAL_BUCKET","itl-0004-itx-dev-poc-02-operational")
-
+ 
         if layer == self.Layer.REFERENCE:
             return os.environ.get("S3_REFERENCE_BUCKET","itl-0004-itx-dev-poc-02-reference")
-
+ 
         raise ValueError(f"No existe bucket configurado para layer={layer}")
 
     def _get_file_details(self, client_id: str, file_id: str):
         db = Database()
-
+ 
         df = db.read_records(
             table_name="file_control",
             fields=[
@@ -284,10 +284,10 @@ class FileStorage:
                 "file_id": file_id,
             },
         )
-
+ 
         if df.empty:
             raise ValueError(f"No se encontró file_id={file_id}")
-
+ 
         return df.iloc[0]
 
     def _build_key(
@@ -299,21 +299,21 @@ class FileStorage:
         subdir: str = "",
         filename: str | None = None,
     ) -> str:
-
+ 
         file_details = self._get_file_details(client_id, file_id)
-
+ 
         processing_date = str(file_details["file_processing_date"])
         landing_file_name = file_details["landing_file_name"]
-
+ 
         if layer == self.Layer.LANDING:
             return f"{client_id}/{landing_file_name}"
-
+ 
         if layer == self.Layer.REFERENCE:
             return f"{subdir}/{filename}"
-
+ 
         if not filename:
             raise ValueError("filename es obligatorio para STAGING/OPERATIONAL")
-
+ 
         #return f"{client_id}/MC/"f"date={processing_date}/"f"process={subdir}/{filename}"
         return f"{client_id}/MC/{subdir}/file_type={file_type}/date={processing_date}/{filename}"
 
@@ -325,29 +325,29 @@ class FileStorage:
         file_type:str,
         subdir: str,
     ) -> list[str]:
-
+ 
         bucket = self._get_bucket_by_layer(layer)
-
+ 
         file_details = self._get_file_details(client_id, file_id)
         processing_date = str(file_details["file_processing_date"])
-
+ 
         #prefix = f"{client_id}/MC/date={processing_date}/process={subdir}/"
         prefix = f"{client_id}/MC/{subdir}/file_type={file_type}/date={processing_date}/"
-
+ 
         logging.info(f"Bucket: {bucket}")
         logging.info(f"Prefix: {prefix}")
-
+ 
         paginator = self.s3.get_paginator("list_objects_v2")
-
+ 
         keys: list[str] = []
-
+ 
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
-
+ 
                 if key.endswith(".parquet"):
                     keys.append(key)
-
+ 
         return keys
 
     def get_landing_object(
@@ -356,16 +356,16 @@ class FileStorage:
         file_id: str,
         file_type: str,
     ) -> tuple[str, str]:
-
+ 
         bucket = self._get_bucket_by_layer(self.Layer.LANDING)
-
+ 
         key = self._build_key(
             layer=self.Layer.LANDING,
             client_id=client_id,
             file_id=file_id,
             file_type=file_type,
         )
-
+ 
         return bucket, key
 
     def write_parquet(
@@ -378,9 +378,9 @@ class FileStorage:
         subdir: str = "",
         filename: str = "data.parquet",
     ) -> str:
-
+ 
         bucket = self._get_bucket_by_layer(layer)
-
+ 
         key = self._build_key(
             layer=layer,
             client_id=client_id,
@@ -389,21 +389,21 @@ class FileStorage:
             subdir=subdir,
             filename=filename,
         )
-
+ 
         tmp_path = f"/tmp/{filename}"
-
+ 
         df.to_parquet(
         tmp_path,
         index=False,
         engine="pyarrow",
     )
-
+ 
         self.s3.upload_file(
             Filename=tmp_path,
             Bucket=bucket,
             Key=key,
         )
-
+ 
         Path(tmp_path).unlink(missing_ok=True)
         
         return f"s3://{bucket}/{key}"
@@ -416,9 +416,9 @@ class FileStorage:
         subdir: str = "",
         filename: str = "data.parquet",
     ) -> pd.DataFrame:
-
+ 
         bucket = self._get_bucket_by_layer(layer)
-
+ 
         key = self._build_key(
             layer=layer,
             client_id=client_id,
@@ -426,12 +426,12 @@ class FileStorage:
             subdir=subdir,
             filename=filename,
         )
-
+ 
         response = self.s3.get_object(
             Bucket=bucket,
             Key=key,
         )
-
+ 
         return pd.read_parquet(
             io.BytesIO(response["Body"].read())
         )
@@ -442,16 +442,16 @@ class FileStorage:
         key: str,
         columns: list[str] | None = None,
     ) -> pd.DataFrame:
-
+ 
         bucket = self._get_bucket_by_layer(layer)
-
+ 
         logging.info(f"Leyendo parquet: s3://{bucket}/{key}")
-
+ 
         response = self.s3.get_object(
             Bucket=bucket,
             Key=key,
         )
-
+ 
         return pd.read_parquet(
             io.BytesIO(response["Body"].read()),
             columns=columns,
@@ -467,7 +467,7 @@ def _build_outputs_for_stepfunction(s3_urls: list[str]) -> list[dict]:
     """
     Transforma la lista de URLs completas que produce _pipeline_mc_interpreter
     en el array de objetos que consume mc_calculate como parámetro --outputs.
-
+ 
     Input:  ["s3://bucket/SBSA/MC/100_IPM_1240_RAW/file_type=IN/date=.../xxx.parquet", ...]
     Output: [{"mti": "1240", "s3_key": "SBSA/MC/100_IPM_1240_RAW/file_type=IN/date=.../xxx.parquet"}, ...]
     """
@@ -480,10 +480,10 @@ def _build_outputs_for_stepfunction(s3_urls: list[str]) -> list[dict]:
             s3_key = without_scheme.split("/", 1)[1]          # "rest/of/key"
         else:
             s3_key = url
-
+ 
         m = _MTI_FROM_KEY_RE.search(url)
         mti = m.group(1) if m else "UNKNOWN"
-
+ 
         result.append({"mti": mti, "s3_key": s3_key})
     return result
 
@@ -493,14 +493,14 @@ def _build_outputs_for_stepfunction(s3_urls: list[str]) -> list[dict]:
 # ==============================================================================
  
 PdsLayout = Dict[str, Union[int, Dict[str, int]]]
-
-
+ 
+ 
 # ==============================================================================
 # 2. Constantes de layout estáticas por MTI
 #    (declaradas aquí para que mc_transform_core sea completamente autónomo;
 #     mc_extract_core tiene sus propias copias independientes)
 # ==============================================================================
-
+ 
 # ------------------------------------------------------------------------------
 # 2a. BASE_COLS y TUPLE_DE_PDS por MTI
 # ------------------------------------------------------------------------------
@@ -603,11 +603,11 @@ def get_base_cols_and_containers(mti: str) -> tuple[list[str], tuple]:
 #    (copia independiente de la que vive en mc_extract_core;
 #     cada pipeline — extract y transform — gestiona su propio caché)
 # ==============================================================================
-
+ 
 # Caché módulo-nivel: mti → (dict_de, dict_pds).
 # La BD se consulta una sola vez por MTI durante la vida del proceso.
 _layout_cache: dict[str, tuple[dict, dict]] = {}
-
+ 
 # =============================================================================
 # 4. Fixed-width helpers
 # =============================================================================
@@ -617,33 +617,32 @@ def build_expected_columns(
     dict_de: dict,
     dict_pds: dict,
 ) -> list[str]:
-
+ 
     base_cols, _ = get_base_cols_and_containers(mti)
-
+ 
     rename_map = {
         "MSG_NO": "ref_id",
         "MTI": "type_mti",
     }
-
+ 
     cols = []
-
+ 
     for col in base_cols:
         cols.append(rename_map.get(col, col))
-
+ 
     for de_name, de_spec in dict_de.items():
         cols.append(de_name)
-
+ 
         if isinstance(de_spec, dict):
             cols.extend(de_spec.keys())
-
+ 
     for pds_name, pds_spec in dict_pds.items():
         cols.append(pds_name)
-
+ 
         if isinstance(pds_spec, dict):
             cols.extend(pds_spec.keys())
 
     cols.extend([
-        "file_type",
         "file_processing_date",
         "file_id",
     ])
@@ -654,13 +653,13 @@ def align_chunk_to_expected_columns(
     chunk: pd.DataFrame,
     expected_columns: list[str],
 ) -> pd.DataFrame:
-
+ 
     for col in expected_columns:
         if col not in chunk.columns:
             chunk[col] = pd.NA
-
+ 
     chunk = chunk[expected_columns]
-
+ 
     for col in chunk.columns:
         if col == "ref_id":
             chunk[col] = pd.to_numeric(
@@ -669,7 +668,7 @@ def align_chunk_to_expected_columns(
             ).astype("Int64")
         else:
             chunk[col] = chunk[col].astype("string")
-
+ 
     return chunk
 
 def expand_de43(df: pd.DataFrame, col: str = "DE_43") ->  pd.DataFrame:
@@ -689,20 +688,20 @@ def expand_de43(df: pd.DataFrame, col: str = "DE_43") ->  pd.DataFrame:
     
     s = df[col].fillna("").astype(str)
     parts = s.str.split("\\", n=3, expand=True, regex=False) # Split en 3 delimitadores: name, street, city, tail
-
+ 
     while parts.shape[1] < 4: # Asegura 4 columnas aunque falten
         parts[parts.shape[1]] = ""
-
+ 
     name    = parts[0].fillna("")
     street  = parts[1].fillna("")
     city    = parts[2].fillna("")
     tail    = parts[3].fillna("")
-
+ 
     tail16  = tail.str.pad(16, side="right").str.slice(0, 16) # Tail debe tener al menos 16 chars para (10,3,3)
     postal  = tail16.str.slice(0, 10)
     subdiv  = tail16.str.slice(10, 13)
     country = tail16.str.slice(13, 16)
-
+ 
     out = pd.DataFrame(
         {
             "DE_43_1": name,
@@ -714,15 +713,15 @@ def expand_de43(df: pd.DataFrame, col: str = "DE_43") ->  pd.DataFrame:
         },
         index=df.index,
     )
-
+ 
     for c in out.columns: # Limpieza: rstrip y vacíos -> NA
         out[c] = out[c].astype("string").str.rstrip()
         out[c] = out[c].replace("", pd.NA)
-
+ 
     to_drop = [c for c in out.columns if c in df.columns] # Si ya existían subfields viejos (mal cortados), los pisamos
     if to_drop:
         df = df.drop(columns=to_drop)
-
+ 
     return pd.concat([df, out], axis=1)
 
 
@@ -750,7 +749,7 @@ def expand_fixed_width_series_to_df(
         
     s = serie.fillna("").astype(str) # Normalize string
     mask = s.ne("")
-
+ 
     if not mask.any():
         cols = [f"{prefix}{k}" if prefix else k for k in spec.keys()]
         return pd.DataFrame({c: pd.NA for c in cols}, index=serie.index)
@@ -758,12 +757,12 @@ def expand_fixed_width_series_to_df(
     s_cut = s.where(mask) # Los vacions vuelven NAN
     out: dict[str, pd.Series] = {}
     pos = 0 
-
+ 
     for name, ln in spec.items():
         col_name        = f"{prefix}{name}" if prefix else name # slice vectorizado pero en filas vacias quedara en NaN
         out[col_name]   = s_cut.str.slice(pos, pos + int(ln))
         pos             = pos + int(ln)
-
+ 
     df_out = pd.DataFrame(out, index=serie.index)
     return df_out.where(df_out.notna(), pd.NA)
 
@@ -791,7 +790,7 @@ def expand_fixed_width_columns(
         return df
     
     parts: list[pd.DataFrame] = []
-
+ 
     for col, spec in specs_by_col.items(): # si permite ignorar y el col del specs no está en el df = no está en el df
         if only_if_present and col not in df.columns: 
             continue
@@ -801,7 +800,7 @@ def expand_fixed_width_columns(
             continue
         sub_df = expand_fixed_width_series_to_df(serie=s, spec=spec)
         parts.append(sub_df)
-
+ 
     if not parts:
         return df
     
@@ -812,7 +811,7 @@ def expand_fixed_width_columns(
 # ==============================================================================
 # 5. DE / subfield helpers
 # ==============================================================================
-
+ 
 def filter_df_columns_de( 
     df: pd.DataFrame, 
     mti: str,
@@ -829,7 +828,7 @@ def filter_df_columns_de(
     """
     df = df.rename(columns=str.upper)
     base_cols, _ = get_base_cols_and_containers(mti)
-
+ 
     cols_to_keep = (
         [c for c in base_cols if c in df.columns] 
         + [c for c in dict_de.keys() if c in df.columns]
@@ -888,7 +887,7 @@ def reorder_with_subfield(
     """
     col_set = set(df.columns)
     cols = []
-
+ 
     for c in df.columns:
         cols.append(c)
         spec = dict_de.get(c)
@@ -896,7 +895,7 @@ def reorder_with_subfield(
             for subc in spec.keys(): # Agregar subcampos si existen
                 if subc in col_set:
                     cols.append(subc)
-
+ 
     cols = list(dict.fromkeys(cols)) # quitar duplicados manteniendo orden
     return df[cols]
 
@@ -920,18 +919,18 @@ def parse_pds_tlv_scan_txt(blob: str, wanted_tag_txt: set[str] ) -> dict[str, st
     - TLV válido y tag en wanted      → guarda el valor.
     - TLV válido y tag fuera de wanted→ salta length chars (no guarda).
     """
-
+ 
     if not blob:
         return {}
     
     n = len(blob)
     out: dict[str, str] = {}
     i = 0
-
+ 
     while i + 7 <= n:
         tag_txt = blob[i:i+4]
         len_txt = blob[i+4:i+7]
-
+ 
         # Verified if TLV valid appear in this position
         if not (tag_txt.isdigit() and len_txt.isdigit()):
             i = i + 1
@@ -942,10 +941,10 @@ def parse_pds_tlv_scan_txt(blob: str, wanted_tag_txt: set[str] ) -> dict[str, st
         if ln > 999:
             i = i + 1
             continue
-
+ 
         start_val = i + 7
         end_val = start_val + ln
-
+ 
         # Verified if end TLV es valid or not (jump +1 char)
         if end_val > n:
             i = i + 1 
@@ -954,10 +953,10 @@ def parse_pds_tlv_scan_txt(blob: str, wanted_tag_txt: set[str] ) -> dict[str, st
         # TLV valid
         if tag_txt in wanted_tag_txt:
             out[f"PDS_{int(tag_txt)}"] = blob[start_val:end_val]
-
+ 
         # Success saved TLV: Jump TLV lengh
         i = end_val
-
+ 
     return out
 
 def extract_pds_columns_from_containers_fast(
@@ -979,39 +978,39 @@ def extract_pds_columns_from_containers_fast(
         return df
     
     wanted_tag_txt = {f"{t:04d}" for t in wanted_tags}
-
+ 
     present_cols = [c for c in container_cols if c in df.columns]
-
+ 
     if not present_cols:
         return df
     
     n                                   = len(df)
     cols_with_data: list[str]           = []
     series_cache: dict[str, pd.Series]  = {}
-
+ 
     for c in present_cols:
         s = df[c].fillna("").astype(str)
         series_cache[c] = s
         non_empty = (s != "").sum()
         if non_empty > 0:
             cols_with_data.append(c)
-
+ 
     if not cols_with_data:
         return df
 
     # 2) Parser a list 
     parsed_per_col: list[list[dict[str, str]]] = []
-
+ 
     for c in cols_with_data:
         blobs = series_cache[c].to_numpy(dtype=object)
-
+ 
         # list comprehension 
         parsed = [
             parse_pds_tlv_scan_txt(blob=b, wanted_tag_txt=wanted_tag_txt) if b else {}
             for b in blobs
         ]
         parsed_per_col.append(parsed)
-
+ 
     # 3) Merge per row only if have more than 1 container with data
     if len(parsed_per_col) == 1:
         combined = parsed_per_col[0]
@@ -1030,7 +1029,7 @@ def extract_pds_columns_from_containers_fast(
     pds_df.index    = df.index
     pds_df          = pds_df.reindex(columns=expected_cols)
     pds_df          = pds_df.where(pds_df.notna(), pd.NA)
-
+ 
     return pd.concat([df, pds_df], axis=1)
 
 
@@ -1047,14 +1046,14 @@ def expand_pds_subfields(
     
     # mapping: col -> spec (only when have dict and exists in the df)
     mapping: dict[str, dict[str, int]] = {}
-
+ 
     for pds_name, spec in pds_layout.items():
         if not isinstance(spec,dict):
             continue        
         if pds_name not in df.columns:
             continue
         mapping[pds_name] = cast(dict[str, int], spec)
-
+ 
     if not mapping:
         return df
         
@@ -1133,25 +1132,25 @@ def apply_pds_for_mti(
     """
     if df is None or df.empty:
         return df
-
+ 
     # normalizar columnas a UPPER
     if any(c != c.upper() for c in df.columns):
         df = df.copy()
         df.columns = [c.upper() for c in df.columns]
-
+ 
     wanted_tags = wanted_tags_from_layout(dict_pds)
-
+ 
     df2 = extract_pds_columns_from_containers_fast(
         df=df,
         container_cols=container_cols,
         wanted_tags=wanted_tags,
     )
-
+ 
     df3 = expand_pds_subfields(
         df=df2,
         pds_layout=dict_pds,
     )
-
+ 
     return df3
 
 
@@ -1173,31 +1172,31 @@ def apply_pds_for_mti_1644_split(
     """
     if df is None or df.empty:
         return {}
-
+ 
     # normalizar columnas a UPPER
     if any(c != c.upper() for c in df.columns):
         df = df.copy()
         df.columns = [c.upper() for c in df.columns]
-
+ 
     if "FUNCTION_CODE" not in df.columns:
         return {}
-
+ 
     fc_series = df["FUNCTION_CODE"].astype(str)
     df = df[fc_series.isin({"685", "688","691"})]
     if df.empty:
         return {}
-
+ 
     out: dict[str, pd.DataFrame] = {}
-
+ 
     for fc, g in df.groupby("FUNCTION_CODE", dropna=False):
         fc_str = str(fc)
-
+ 
         # Reglas de negocio estáticas: qué tags aplican por FC
         tags = wanted_pds_tags_1644(fc_str, pds_layout=dict_pds_1644) #trae los tags (pds) que se van a usar de acuerdo al function code
-
+ 
         # Filtrar el layout por los tags del FC
         pds_layout_fc = pds_layout_1644_for_tags(tags, pds_layout=dict_pds_1644) #traer los pds que se usaran
-
+ 
         g2 = extract_pds_columns_from_containers_fast(
             df=g,
             container_cols=TUPLE_DE_PDS_LYT_1644,  # DE_48
@@ -1220,24 +1219,24 @@ def transform_ipm_1240(
 
     t_total = perf_counter()
     db = Database()
-
+ 
     file_config = fs._get_file_details(
         client_id=client_id,
         file_id=file_id,
     )
-
+ 
     dict_de, dict_pds = db.get_layout_by_mti("1240")
     _, container_cols = get_base_cols_and_containers("1240")
-
+ 
     expected_columns = build_expected_columns(
         mti="1240",
         dict_de=dict_de,
         dict_pds=dict_pds,
     )
-
+ 
     file_processing_date = file_config["file_processing_date"]
     file_type = file_type
-
+ 
     keys = fs.list_parquet_files(
         layer=fs.Layer.STAGING,
         client_id=client_id,
@@ -1245,57 +1244,57 @@ def transform_ipm_1240(
         file_type=file_type,
         subdir="100_IPM_1240_RAW",
     )
-
+ 
     logging.info(f"Total parquets encontrados: {len(keys)}")
 
     if not keys:
         raise ValueError("No se encontraron parquets para procesar.")
-
+ 
     for i, key in enumerate(keys, start=1):
-
+ 
         t_file = perf_counter()
         filename = Path(key).name
         tmp_path = f"/tmp/{Path(filename).stem}_{uuid.uuid4().hex}.parquet"
         writer = None
-
+ 
         logging.info(f"[{i}/{len(keys)}] Procesando key: {key}")
-
+ 
         if context:
             logging.info(
                 f"[{i}] Tiempo restante Lambda: "
                 f"{context.get_remaining_time_in_millis() / 1000:.2f}s"
             )
-
+ 
         try:
             # ============================================================
             # 1) Leer parquet origen
             # ============================================================
             t = perf_counter()
-
+ 
             df = fs.read_parquet_by_key(
                 layer=fs.Layer.STAGING,
                 key=key,
             )
-
+ 
             logging.info(
                 f"[{i}] read_parquet: {perf_counter() - t:.2f}s | "
                 f"rows={len(df)} | cols={len(df.columns)}"
             )
-
+ 
             # ============================================================
             # 2) Filtrar columnas DE necesarias
             # ============================================================
             t = perf_counter()
-
+ 
             df_de_only = filter_df_columns_de(
                 df=df,
                 mti="1240",
                 dict_de=dict_de,
             )
-
+ 
             del df
             gc.collect()
-
+ 
             logging.info(
                 f"[{i}] filter_df_columns_de: {perf_counter() - t:.2f}s | "
                 f"rows={len(df_de_only)} | cols={len(df_de_only.columns)}"
@@ -1305,26 +1304,26 @@ def transform_ipm_1240(
             # 3) Calcular chunk_size dinámico
             # ============================================================
             total_rows = len(df_de_only)
-
+ 
             memory_mb = (
                 df_de_only.memory_usage(deep=True).sum()
                 / 1024
                 / 1024
             )
-
+ 
             target_chunk_mb = 500
-
+ 
             chunk_size = max(
                 10_000,
                 int(total_rows * target_chunk_mb / max(memory_mb, 1)),
             )
-
+ 
             
-
+ 
             chunk_size = min(chunk_size, 100_000)
-
+ 
             total_chunks = (total_rows + chunk_size - 1) // chunk_size
-
+ 
             logging.info(
                 f"[{i}] memory_df_de_only={memory_mb:.2f} MB | "
                 f"chunk_size={chunk_size} | "
@@ -1338,41 +1337,41 @@ def transform_ipm_1240(
                 range(0, total_rows, chunk_size),
                 start=1,
             ):
-
+ 
                 t_chunk = perf_counter()
                 end = min(start + chunk_size, total_rows)
-
+ 
                 logging.info(
                     f"[{i}.{chunk_idx}/{total_chunks}] "
                     f"filas={start}:{end}"
                 )
-
+ 
                 chunk = df_de_only.iloc[start:end].copy()
-
+ 
                 # 4.1 Expandir DE subfields
                 t = perf_counter()
-
+ 
                 chunk = expand_subfields(
                     df=chunk,
                     mti="1240",
                     dict_de=dict_de,
                 )
-
+ 
                 logging.info(
                     f"[{i}.{chunk_idx}] expand_subfields: "
                     f"{perf_counter() - t:.2f}s | "
                     f"rows={len(chunk)} | cols={len(chunk.columns)}"
                 )
-
+ 
                 # 4.2 Reordenar columnas
                 t = perf_counter()
-
+ 
                 chunk = reorder_with_subfield(
                     df=chunk,
                     mti="1240",
                     dict_de=dict_de,
                 )
-
+ 
                 logging.info(
                     f"[{i}.{chunk_idx}] reorder_with_subfield: "
                     f"{perf_counter() - t:.2f}s | "
@@ -1381,34 +1380,33 @@ def transform_ipm_1240(
 
                 # 4.3 Aplicar PDS
                 t = perf_counter()
-
+ 
                 chunk = apply_pds_for_mti(
                     df=chunk,
                     mti="1240",
                     dict_pds=dict_pds,
                     container_cols=container_cols,
                 )
-
+ 
                 logging.info(
                     f"[{i}.{chunk_idx}] apply_pds_for_mti: "
                     f"{perf_counter() - t:.2f}s | "
                     f"rows={len(chunk)} | cols={len(chunk.columns)}"
                 )
-
+ 
                 # 4.4 Rename + metadata
                 t = perf_counter()
-
+ 
                 chunk = chunk.rename(
                     columns={
                         "MSG_NO": "ref_id",
                         "MTI": "type_mti",
                     }
                 )
-
-                chunk["file_type"] = file_type
+ 
                 chunk["file_processing_date"] = file_processing_date
                 chunk["file_id"] = file_id
-
+ 
                 logging.info(
                     f"[{i}.{chunk_idx}] rename_metadata: "
                     f"{perf_counter() - t:.2f}s | "
@@ -1417,8 +1415,8 @@ def transform_ipm_1240(
 
                 # 4.5 Escribir chunk al mismo parquet local
                 t = perf_counter()
-
-
+ 
+ 
                 chunk = align_chunk_to_expected_columns(
                     chunk=chunk,
                     expected_columns=expected_columns,
@@ -1428,34 +1426,34 @@ def transform_ipm_1240(
                     chunk,
                     preserve_index=False,
                 )
-
+ 
                 if writer is None:
                     writer = pq.ParquetWriter(
                         tmp_path,
                         table.schema,
                         compression="snappy",
                     )
-
+ 
                 writer.write_table(table)
-
+ 
                 logging.info(
                     f"[{i}.{chunk_idx}] write_chunk_tmp: "
                     f"{perf_counter() - t:.2f}s | "
                     f"rows={len(chunk)} | cols={len(chunk.columns)}"
                 )
-
+ 
                 del chunk
                 del table
                 gc.collect()
-
+ 
                 logging.info(
                     f"[{i}.{chunk_idx}] total_chunk: "
                     f"{perf_counter() - t_chunk:.2f}s"
                 )
-
+ 
             del df_de_only
             gc.collect()
-
+ 
         finally:
             if writer is not None:
                 writer.close()
@@ -1464,9 +1462,9 @@ def transform_ipm_1240(
         # 5) Subir único parquet final a S3
         # ============================================================
         t = perf_counter()
-
+ 
         bucket = fs._get_bucket_by_layer(layer.STAGING)
-
+ 
         target_key = fs._build_key(
             layer=layer.STAGING,
             client_id=client_id,
@@ -1475,24 +1473,24 @@ def transform_ipm_1240(
             subdir="200_IPM_1240_TRA",
             filename=filename,
         )
-
+ 
         fs.s3.upload_file(
             Filename=tmp_path,
             Bucket=bucket,
             Key=target_key,
         )
-
+ 
         Path(tmp_path).unlink(missing_ok=True)
-
+ 
         logging.info(
             f"[{i}] upload_final_parquet: {perf_counter() - t:.2f}s | "
             f"s3://{bucket}/{target_key}"
         )
-
+ 
         logging.info(
             f"[{i}] total_archivo: {perf_counter() - t_file:.2f}s"
         )
-
+ 
     logging.info(
         f"Tiempo total transform_ipm_1240: {perf_counter() - t_total:.2f}s"
     )
@@ -1500,14 +1498,14 @@ def transform_ipm_1240(
 # ==============================================================================
 # MTI 1442
 # ==============================================================================
-
+ 
 def transform_ipm_1442(
         client_id: str, 
         file_id: str,
         file_type: str,
         context=None,
 ) -> None:
-
+ 
     t_total = perf_counter()
     db = Database()
     
@@ -1515,11 +1513,11 @@ def transform_ipm_1442(
         client_id=client_id,
         file_id=file_id,
     )
-
+ 
     #dict_de = db.get_de_layout("1240")
     dict_de, dict_pds = db.get_layout_by_mti("1442")
     _, container_cols = get_base_cols_and_containers("1442")
-
+ 
     file_processing_date = file_config["file_processing_date"]
     #file_type = str(file_config["file_type"]).strip().upper()
     file_type = file_type
@@ -1531,7 +1529,7 @@ def transform_ipm_1442(
         file_type=file_type,
         subdir="100_IPM_1442_RAW",
     )
-
+ 
     logging.info(f"Total parquets encontrados: {len(keys)}")
     
     #2) Iterar la lista para leer los parquets
@@ -1540,9 +1538,9 @@ def transform_ipm_1442(
         t_file = perf_counter()
         
         logging.info(f"[{i}/{len(keys)}] Procesando key: {key}")
-
+ 
         filename = (Path(key).name)
-
+ 
         if context:
             logging.info(
                 f"[{i}] Tiempo restante Lambda: "
@@ -1555,55 +1553,54 @@ def transform_ipm_1442(
             layer=fs.Layer.STAGING,
             key=key,
         )
-
+ 
         logging.info(f"[{i}] read_parquet: {perf_counter() - t:.2f}s | rows={len(df)} | cols={len(df.columns)}")
-
+ 
         t = perf_counter()
         df_de_only = filter_df_columns_de(df=df, mti = '1442', dict_de=dict_de )
         del df
-
+ 
         logging.info(f"[{i}] filter_df_columns_de: {perf_counter() - t:.2f}s | rows={len(df_de_only)} | cols={len(df_de_only.columns)}")
 
         # 4) Expandir los DE por subfields según el layout del mensaje
         t = perf_counter()
         df_expand = expand_subfields(df=df_de_only, mti='1442', dict_de=dict_de)
         del df_de_only
-
+ 
         logging.info(f"[{i}] expand_subfields: {perf_counter() - t:.2f}s | rows={len(df_expand)} | cols={len(df_expand.columns)}")
-
+ 
         t = perf_counter()
         df_expand = reorder_with_subfield(df=df_expand, mti='1442', dict_de=dict_de)
-
+ 
         logging.info(f"[{i}] expand_reorder_with_subields: {perf_counter() - t:.2f}s | rows={len(df_expand)} | cols={len(df_expand.columns)}")
-
+ 
         # 5) Logica los PDS y los PDS subfields
         t = perf_counter()
         df_expand = apply_pds_for_mti(df=df_expand, mti = '1442', dict_pds=dict_pds, container_cols=container_cols)
-
+ 
         logging.info(f"[{i}] expand_apply_pds_for_mti: {perf_counter() - t:.2f}s | rows={len(df_expand)} | cols={len(df_expand.columns)}")
             
         # 5.1) Rename
         t = perf_counter()
         df_expand = df_expand.rename(columns={"MSG_NO": "ref_id", "MTI": "type_mti",},)
-
+ 
         logging.info(f"[{i}] expand_rename_columns: {perf_counter() - t:.2f}s | rows={len(df_expand)} | cols={len(df_expand.columns)}")
 
         t = perf_counter()
         df_expand = df_expand.assign(
-            file_type=file_type,
             file_processing_date=file_processing_date,
             file_id=file_id,
         )
-
+ 
         logging.info(f"[{i}] expand_assign: {perf_counter() - t:.2f}s | rows={len(df_expand)} | cols={len(df_expand.columns)}")
-
+ 
         # 6) Generar parquets
         t = perf_counter()
         fs.write_parquet(df=df_expand, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type = file_type, subdir= '200_IPM_1442_TRA', filename=filename)
         logging.info(f"[{i}] write_parquet: {perf_counter() - t:.2f}s")
         
         del df_expand
-
+ 
     logging.info(f"Tiempo total transform_ipm_1442: {perf_counter() - t_total:.2f}s")
 
 
@@ -1614,10 +1611,10 @@ def transform_ipm_1442(
 def transform_ipm_1644(
     client_id: str, 
     file_id: str,
-    file_type=str,
+    file_type: str,
     context=None,
 ) -> None:
-
+ 
     t_total = perf_counter()
     
     db = Database()
@@ -1627,7 +1624,7 @@ def transform_ipm_1644(
         client_id=client_id,
         file_id=file_id,
     )
-
+ 
     # 1) Obtener lista de parquets derivados
     keys = fs.list_parquet_files(
         layer=fs.Layer.STAGING,
@@ -1636,19 +1633,19 @@ def transform_ipm_1644(
         file_type=file_type,
         subdir="100_IPM_1644_RAW",
     )
-
+ 
     logging.info(f"Total parquets encontrados: {len(keys)}")
-
+ 
     if not keys:
         raise ValueError("No se encontraron parquets para procesar.")
     
     #2) Iterar la lista para leer los parquets
     for i, key in enumerate(keys, start=1):
-
+ 
         t_file = perf_counter()
         
         logging.info(f"[{i}/{len(keys)}] Procesando key: {key}")
-
+ 
         filename = (Path(key).name)
         
         t = perf_counter()
@@ -1656,19 +1653,19 @@ def transform_ipm_1644(
             layer=fs.Layer.STAGING,
             key=key,
         )
-
+ 
         logging.info(f"[{i}] read_parquet: {perf_counter() - t:.2f}s | rows={len(df)} | cols={len(df.columns)}")
-
+ 
         t = perf_counter()
         df_de_only = filter_df_columns_de(df=df, mti = '1644', dict_de=dict_de)
         del df
         logging.info(f"[{i}] filter_df_columns_de: {perf_counter() - t:.2f}s | rows={len(df_de_only)} | cols={len(df_de_only.columns)}")
-
+ 
         t = perf_counter()
         dfs = apply_pds_for_mti_1644_split(df_de_only, dict_pds_1644=dict_pds)
         del df_de_only
         #logging.info(f"[{i}] apply_pds_for_mti_1644_split: {perf_counter() - t:.2f}s | rows={len(dfs)} | cols={len(dfs.columns)}")
-
+ 
         
         df_685 = dfs.get("685")
         df_688 = dfs.get("688")
@@ -1683,7 +1680,7 @@ def transform_ipm_1644(
             fs.write_parquet(df=df_688, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type, subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_688.parquet")}')
         if df_691 is not None and not df_691.empty:
             fs.write_parquet(df=df_691, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type,subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_691.parquet")}')
-
+ 
         del df_685, df_688, df_691, dfs
 
 # ==============================================================================
@@ -1693,7 +1690,7 @@ def transform_ipm_1644(
 def transform_ipm_1740(
         client_id: str, 
         file_id: str, 
-        file_type=str,
+        file_type: str,
         context=None,
 ) -> None:
     
@@ -1704,11 +1701,11 @@ def transform_ipm_1740(
         client_id=client_id,
         file_id=file_id,
     )
-
+ 
     #dict_de = db.get_de_layout("1240")
     dict_de, dict_pds = db.get_layout_by_mti("1740")
     _, container_cols = get_base_cols_and_containers("1740")
-
+ 
     # 1) Obtener lista de parquets derivados
     keys = fs.list_parquet_files(
         layer=fs.Layer.STAGING,
@@ -1720,13 +1717,13 @@ def transform_ipm_1740(
     
     # 2) Iterar la lista para leer los parquets
     for i, key in enumerate(keys, start=1):
-
+ 
         t_file = perf_counter()
         
         logging.info(f"[{i}/{len(keys)}] Procesando key: {key}")
-
+ 
         filename = (Path(key).name)
-
+ 
         if context:
             logging.info(
                 f"[{i}] Tiempo restante Lambda: "
@@ -1739,37 +1736,37 @@ def transform_ipm_1740(
             layer=fs.Layer.STAGING,
             key=key,
         )
-
+ 
         logging.info(f"[{i}] read_parquet: {perf_counter() - t:.2f}s | rows={len(df)} | cols={len(df.columns)}")
-
+ 
         t = perf_counter()
         df_de_only = filter_df_columns_de(df=df, mti = '1740', dict_de=dict_de )
         del df
-
+ 
         logging.info(f"[{i}] filter_df_columns_de: {perf_counter() - t:.2f}s | rows={len(df_de_only)} | cols={len(df_de_only.columns)}")
 
         # 4) Expandir los DE por subfields según el layout del mensaje
         t = perf_counter()
         df_expand = expand_subfields(df=df_de_only, mti='1740', dict_de=dict_de)
         del df_de_only
-
+ 
         logging.info(f"[{i}] expand_subfields: {perf_counter() - t:.2f}s | rows={len(df_expand)} | cols={len(df_expand.columns)}")
-
+ 
         t = perf_counter()
         df_expand = reorder_with_subfield(df=df_expand, mti='1740', dict_de=dict_de)
-
+ 
         logging.info(f"[{i}] expand_reorder_with_subields: {perf_counter() - t:.2f}s | rows={len(df_expand)} | cols={len(df_expand.columns)}")
-
+ 
         # 5) Logica los PDS y los PDS subfields
         t = perf_counter()
         df_expand = apply_pds_for_mti(df=df_expand, mti = '1740', dict_pds=dict_pds, container_cols=container_cols)
-
+ 
         logging.info(f"[{i}] expand_apply_pds_for_mti: {perf_counter() - t:.2f}s | rows={len(df_expand)} | cols={len(df_expand.columns)}")
             
         # 5.1) Rename
         t = perf_counter()
         df_expand = df_expand.rename(columns={"MSG_NO": "ref_id", "MTI": "type_mti",},)
-
+ 
         logging.info(f"[{i}] expand_rename_columns: {perf_counter() - t:.2f}s | rows={len(df_expand)} | cols={len(df_expand.columns)}")
 
         # 6) Generar parquets
@@ -1791,11 +1788,11 @@ def detect_available_mtis(
     file_id: str,
     file_type: str,
 ) -> list[str]:
-
+ 
     mtis = []
-
+ 
     for mti in ("1240", "1442", "1644", "1740"):
-
+ 
         keys = fs.list_parquet_files(
             layer=fs.Layer.STAGING,
             client_id=client_id,
@@ -1803,23 +1800,23 @@ def detect_available_mtis(
             file_type=file_type,
             subdir=f"100_IPM_{mti}_RAW",
         )
-
+ 
         if keys:
             mtis.append(mti)
-
+ 
     return mtis
 
 # ============================================================
 # 9. Handler Lambda
 # ============================================================
-
+ 
 layer = FileStorage.Layer
 fs = FileStorage()   
-
+ 
 def lambda_handler(event, context):
-
+ 
     logging.info(f"EVENT={json.dumps(event)}")
-
+ 
     # ------------------------------------------------------------------
     # 1. Validación de variables de entorno requeridas
     # ------------------------------------------------------------------
@@ -1842,7 +1839,7 @@ def lambda_handler(event, context):
     file_date = event.get("file_date")
     content_hash = event.get("content_hash")
     filename = event.get("filename")
-
+ 
     if not client_id or not file_id:
         raise ValueError(
             f"Faltan campos obligatorios en el evento: "
@@ -1862,38 +1859,38 @@ def lambda_handler(event, context):
     # ------------------------------------------------------------------
     interpreter_result = event.get("interpreter_result", {})
     outputs = interpreter_result.get("outputs", [])
-
+ 
     if outputs:
-
+ 
         mtis_from_outputs = list({
             output["mti"]
             for output in outputs
             if output.get("mti") in TRANSFORMS
         })
-
+ 
         if mtis_from_outputs:
             logging.info(
                 f"MTIs derivados de interpreter_result.outputs: {mtis_from_outputs}"
             )
             mtis = mtis_from_outputs
-
+ 
         else:
             logging.warning(
                 "No se pudieron derivar MTIs de interpreter_result.outputs. "
                 "Ejecutando fallback con detect_available_mtis."
         )
-
+ 
             mtis = detect_available_mtis(
                 client_id=client_id,
                 file_id=file_id,
                 file_type=file_type,
             )
-
+ 
     else:
         logging.info(
             "interpreter_result.outputs vacío. Ejecutando detect_available_mtis."
         )
-
+ 
         mtis = detect_available_mtis(
             client_id=client_id,
             file_id=file_id,
@@ -1901,7 +1898,7 @@ def lambda_handler(event, context):
         )
     
     logging.info(f"MTIs a procesar: {mtis}")
-
+ 
     if not mtis:
         raise ValueError(
             f"No se encontraron MTIs para procesar: "
@@ -1912,25 +1909,25 @@ def lambda_handler(event, context):
     # 4. Ejecución de transforms por MTI
     # ------------------------------------------------------------------
     t_global = perf_counter()
-
+ 
     for mti in mtis:
-
+ 
         transform_fn = TRANSFORMS[mti]
-
+ 
         logging.info(f"START transform_ipm_{mti}")
         t = perf_counter()
-
+ 
         transform_fn(
             client_id=client_id,
             file_id=file_id,
             file_type = file_type,
         )
-
+ 
         logging.info(
             f"END transform_ipm_{mti} | "
             f"time={perf_counter() - t:.2f}s"
         )
-
+ 
     logging.info(f"=== Done: {len(mtis)} MTIs procesados | " 
                  f"Tiempo total= {perf_counter() - t_global:.2f}s ===" )
     
@@ -1943,7 +1940,7 @@ def lambda_handler(event, context):
     # ------------------------------------------------------------------
     staging_bucket = fs._get_bucket_by_layer(layer.STAGING)
     uploaded_outputs: list[str] = []
-
+ 
     for mti in mtis:
         output_subdir = f"200_IPM_{mti}_TRA"
         keys = fs.list_parquet_files(
@@ -1955,12 +1952,12 @@ def lambda_handler(event, context):
         )
         for key in keys:
             uploaded_outputs.append(f"s3://{staging_bucket}/{key}")
-
+ 
     logging.info(
         f"Outputs recolectados: {len(uploaded_outputs)} parquets "
         f"en {len(mtis)} MTIs"
     )
-
+ 
     uploaded_outputs_json = _build_outputs_for_stepfunction(uploaded_outputs)
 
     # ------------------------------------------------------------------
@@ -1983,7 +1980,3 @@ def lambda_handler(event, context):
         "content_hash":     content_hash,
         "filename":         filename,
     }
-
-    
-
-

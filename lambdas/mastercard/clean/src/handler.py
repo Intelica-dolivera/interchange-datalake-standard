@@ -78,9 +78,9 @@ DYNAMO_TABLE_FIELDS: str = "itl-0004-itx-dev-dynamo-mastercard_fields-02"
 # ==============================================================================
 # Business constants
 # ==============================================================================
-
+ 
 VALID_FC_1644: frozenset[str] = frozenset({"685", "688", "691"})
-
+ 
 # Mandatory base columns prepended to every field-def table.
 # MTIs 1240 and 1442 additionally carry file-level metadata columns.
 _BASE_COLS: list[dict] = [
@@ -93,7 +93,6 @@ _BASE_COLS: list[dict] = [
  
 _BASE_COLS_WITH_FILE_META: list[dict] = _BASE_COLS + [
     {"extract_name": "file_id", "data_type": "string"},
-    {"extract_name": "file_type", "data_type": "string"},
     {"extract_name": "file_processing_date", "data_type": "string"},
 ]
  
@@ -126,8 +125,8 @@ _currency_map_cache: Optional[dict[str, int | None]] = None
 # ==============================================================================
 # Decimal helpers
 # ==============================================================================
-
-
+ 
+ 
 def _quantize(d: Decimal, scale: int) -> Decimal:
     """Quantize a Decimal to ``scale`` fractional digits using ROUND_HALF_UP."""
     return d.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP)
@@ -312,8 +311,8 @@ def _load_field_defs(tag: str, *, with_file_cols: bool = False) -> pd.DataFrame:
 # ==============================================================================
 # Currency reference
 # ==============================================================================
-
-
+ 
+ 
 def _get_currency_map() -> dict[str, int | None]:
     """
     Return the currency code → decimal places mapping.
@@ -718,8 +717,8 @@ def _list_parquet_keys(prefix: str, file_id: str) -> list[str]:
  
     keys.sort(key=lambda k: k.rsplit("/", 1)[-1])
     return keys
-
-
+ 
+ 
 def _read_parquet(key: str) -> pd.DataFrame:
     """Download a parquet file from S3 and return it as a DataFrame."""
     body = S3.get_object(Bucket=S3_BUCKET, Key=key)["Body"].read()
@@ -759,7 +758,20 @@ def _write_parquet_with_schema(df: pd.DataFrame, key: str, schema: pa.Schema) ->
                 df_aligned[col],
                 errors="coerce",
             ).astype("Int32")
- 
+
+        elif pa.types.is_date(field.type):
+            # Convert to Python datetime.date objects (or None for nulls).
+            # Using native Python date objects is the only representation that
+            # PyArrow reliably writes as date32 across all supported versions.
+            # Relying on datetime64 → date32 auto-cast fails on older pyarrow
+            # releases (e.g. Lambda environments) when the column is all-null,
+            # producing timestamp[ms] or raising ArrowTypeError instead.
+            dt_series = pd.to_datetime(df_aligned[col], errors="coerce")
+            df_aligned[col] = [
+                None if pd.isna(v) else v.date()
+                for v in dt_series
+            ]
+
     buf = io.BytesIO()
  
     pq.write_table(
@@ -1025,8 +1037,8 @@ def _build_outputs_for_stepfunction(s3_urls: list[str]) -> list[dict]:
 # ==============================================================================
 # Lambda handler
 # ==============================================================================
-
-
+ 
+ 
 def lambda_handler(event: dict, context: Any) -> dict:
     """
     AWS Lambda entry point for the Mastercard clean stage.
@@ -1207,7 +1219,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
         len(uploaded_outputs),
         len(mtis_ok),
     )
-
+ 
     uploaded_outputs_json = _build_outputs_for_stepfunction(uploaded_outputs)
  
     # ------------------------------------------------------------------

@@ -4,6 +4,163 @@ Problemas encontrados durante el desarrollo, con su causa raíz y solución reco
 
 ---
 
+## glue-vi-interchange: fillna(0.0) en fee_min/fee_cap zeroeaba fees positivos — RESUELTO
+
+**Archivo:** `glue/scripts/visa/interchange/interchange.py` (función `process_pandas_partitions`)
+**Detectado:** 2026-06-09
+
+**Síntoma:** `interchange_fee_amount` era 0 para transacciones que matcheaban reglas sin cap explícito (`fee_cap=NaN`). En la comparación por jurisdiction/source_currency, jurisdicciones off-us EUR mostraban fee_amount ≈289 USD menos que el legacy.
+
+**Causa raíz:**
+
+```python
+# ANTES (bug):
+result_pdf["interchange_fee_cap"] = result_pdf["interchange_fee_cap"].fillna(0.0).astype(float)
+result_pdf["interchange_fee_min"] = result_pdf["interchange_fee_min"].fillna(0.0).astype(float)
+```
+
+Reglas sin cap definen `fee_cap=NaN` en pandas. `fillna(0.0)` lo convierte a `0.0`. Spark recibe `0.0` (no NULL), por lo que `coalesce` no actúa:
+```python
+F.coalesce(F.col("interchange_fee_cap"), F.lit(float("inf")))  # → coalesce(0.0, +inf) = 0.0
+F.least(F.col("interchange_fee_amount"), 0.0)                  # → min(15.50, 0.0) = 0.0
+```
+Todos los fees positivos de esas reglas quedaban en cero. El mismo problema con `fee_min=NaN → 0.0` flooreaba fees negativos innecesariamente.
+
+**Solución aplicada (2026-06-09):**
+```python
+# DESPUÉS (correcto):
+result_pdf["interchange_fee_cap"] = result_pdf["interchange_fee_cap"].astype(float)
+result_pdf["interchange_fee_min"] = result_pdf["interchange_fee_min"].astype(float)
+```
+NaN de pandas → NULL en Spark → `coalesce(NULL, ±inf)` → sin restricción. Para reglas con cap explícito (ej. `fee_cap=0.04`), el valor se conserva y actúa como cap real.
+
+**Si vuelve a aparecer (fees en 0 para reglas que deberían tener fee positivo):** Verificar que no haya `fillna(0.0)` sobre `interchange_fee_cap` o `interchange_fee_min` antes del yield en `process_pandas_partitions`. El patrón correcto: solo `astype(float)`, sin fillna.
+
+**Estado:** Resuelto en código local y subido a S3 (2026-06-09). Pendiente validar re-run.
+
+---
+
+## glue-vi-interchange: matching incorrecto intelica_id ATM JPY — regla 1055 en vez de 1065 — PENDIENTE
+
+**Archivo:** `glue/scripts/visa/interchange/interchange.py` (motor de reglas `_apply_default` / `_evaluate_rules_pandas`)
+**Detectado:** 2026-06-09
+
+**Síntoma:** En la comparación de `sum(interchange_fee_amount)` por jurisdiction/source_currency, la diferencia residual de −29.64 para interregional JPY (source_currency=392) se debe a que el nuevo sistema asigna `intelica_id=1055` ("ATM AF") mientras el legacy asigna `intelica_id=1065` ("ATM AF JPN").
+
+**Detalle de las reglas vigentes al 2026-01-03:**
+
+| intelica_id | fee_descriptor | fee_variable | fee_fixed | fee_currency |
+|---|---|---|---|---|
+| 1055 | ATM AF | 0.0015 | — | None (source_ccy) |
+| 1065 | ATM AF JPN | 0.0015 | 0.50 | USD |
+
+Simulación para source_amount=20,220 JPY:
+- Legacy (1065): `0.0015 × 20,220 × exchange(JPY→USD) + 0.50 = 0.19 + 0.50 = 0.69 USD`
+- Nuevo (1055): `0.0015 × 20,220 = 30.33 JPY`
+
+Nota: los fee_amounts están en **monedas distintas** (USD vs JPY) — no son comparables como número directo.
+
+**Causa probable:** La regla 1065 "ATM AF JPN" tiene alguna condición que la restringe a transacciones de Japón (issuer_country, acquirer_country, o merchant_country). Esa condición existe en `visa_rules` pero el motor de reglas del nuevo sistema no la está evaluando correctamente o no está presente en el `calculate.parquet` para esa transacción.
+
+**Para investigar:** Comparar los campos de condición entre la regla 1065 y la 1055 en `visa_rules.parquet` (ambas vigentes al 2026-01-03) para identificar qué campo diferencia "ATM AF JPN" de "ATM AF". Verificar que ese campo tenga el valor correcto en `calculate.parquet` para la transacción en cuestión.
+
+**Estado:** Pendiente de investigación. La diferencia de −29.64 en la comparación global es 1 transacción (count=1).
+
+---
+
+## glue-vi-interchange: dirección del exchange_value — pendiente validar convención
+
+**Archivo:** `glue/scripts/visa/interchange/interchange.py` (función `calculate_fee_amounts`)
+**Detectado:** 2026-06-09
+
+**Contexto:** Existen dos fórmulas posibles para `interchange_fee_amount`, con resultados distintos en transacciones cross-currency:
+
+| Sistema | Fórmula | Moneda del resultado |
+|---|---|---|
+| Legacy PostgreSQL | `fee_variable × (source_amount × exchange_value) + fee_fixed` | fee_currency |
+| Prototipo local | `fee_variable × source_amount + fee_fixed × exchange_value` | source_currency (si exchange_value = source_ccy/fee_ccy) |
+| Glue actual | `fee_variable × source_amount + fee_fixed × exchange_value` | depende de convención |
+
+El usuario prefiere que el fee se exprese en **source_currency** ("la regla se adapta a la moneda de la transacción"). La fórmula del prototipo es consistente con eso SI `exchange_value` en la tabla S3 almacena `source_ccy/fee_ccy` (convención inversa a la del legacy).
+
+**Para validar:** Leer `s3://itl-0004-itx-dev-intchg-02-s3-reference/exchange_rate/data.parquet`, filtrar `currency_from=EUR, currency_to=USD`, ver si `exchange_value ≈ 1.08` (fee_ccy/source_ccy, convención legacy) o `≈ 0.926` (source_ccy/fee_ccy, convención prototipo).
+
+**Estado:** Pendiente — validar convención del exchange_value antes de decidir si la fórmula actual de `calculate_fee_amounts` es correcta.
+
+---
+
+## glue-vi-calculate: calc_timeliness_draft fórmula de domingos tenía off-by-one — no cuadraba con legacy — RESUELTO
+
+**Archivo:** `glue/scripts/visa/calculate/calculate.py` (función `calc_timeliness_draft`)
+**Detectado:** 2026-06-09
+
+**Síntoma:** Los valores de `timeliness` no coincidían con el legacy PostgreSQL para transacciones donde el residuo de la ventana (`remaining_days`) era exactamente igual a `days_to_next_sunday`. En esos casos el legacy daba N, el Glue job daba N−1 (1 domingo de más contado).
+
+**Causa raíz:** La fórmula original construía la ventana `[purchase+1, central−1]` y contaba domingos con `full_weeks + extra_sunday`:
+
+```python
+_days_between = datediff(end_for_sundays, start_for_sundays) + 1
+_full_weeks   = floor(days_between / 7)
+_remaining    = days_between % 7
+_dts          = when(start_dow == 1, 0).otherwise(8 - start_dow)  # días al próximo domingo
+_extra_sunday = when(days_between > 0 AND remaining >= dts, 1).otherwise(0)
+```
+
+El bug: cuando `remaining == dts`, el próximo domingo cae en la posición `full_weeks*7 + dts = days_between` — exactamente fuera del intervalo (índices válidos: `0..days_between−1`). La condición `>=` lo contaba igual.
+
+**Ejemplo concreto:**
+- purchase=2026-01-04 (Dom), central=2026-01-18 (Dom), total_days=14
+- Ventana [05-ene (Lun), 17-ene (Sáb)] — un único domingo: 11-ene
+- Old: full_weeks=1, remaining=6, dts=6 → `6 >= 6` → extra=1 → sundays=2 ✗
+- New: `max(0, floor((14 − 1 + 6 − 6) / 7)) = floor(13/7) = 1` ✓
+
+**Solución aplicada (2026-06-09):** Reescritura a fórmula directa con offset (comentario en el diff):
+
+```python
+_start_dow     = dayofweek(purchase_date + 1)       # Spark: Dom=1..Sáb=7
+offset         = (8 - start_dow) % 7                # días desde start hasta el primer domingo
+_sundays_count = max(0, floor((total_days − 1 + 6 − offset) / 7))
+```
+
+Derivación: en una ventana de `ws = total_days − 1` días con primer domingo en posición `offset` (0-indexed), el número de domingos es `max(0, floor((ws − offset) / 7) + 1) = max(0, floor((ws + 6 − offset) / 7))`.
+
+**Si vuelve a aparecer (timeliness 1 menos que legacy para algunos registros, patrón relacionado con day-of-week de purchase+1):** La señal es que la discrepancia aparece solo cuando `(total_days − 1) % 7 == (8 − start_dow) % 7`. Cualquier lógica `remaining >= days_to_next_sunday` tiene este off-by-one — usar `>` o bien la fórmula directa con offset.
+
+**Estado:** Resuelto en código local (2026-06-09). Pendiente subir a S3 (`s3://itl-0004-itx-dev-intchg-02-s3-reference/glue/scripts/visa/calculate.py`) y re-ejecutar `glue-vi-calculate`.
+
+---
+
+## glue-vi-interchange: _apply_default() convertía NaN a cadena "nan" en columnas no-SPACE — filas excluidas de reglas válidas — RESUELTO
+
+**Archivo:** `glue/scripts/visa/interchange/interchange.py` (función `_apply_default`)
+**Detectado:** 2026-06-09
+
+**Síntoma:** Transacciones con valores NULL en columnas de condición que no pertenecen a `COLUMN_GROUP_SPACE` no matcheaban reglas válidas, cayendo en la regla fallback/default aunque todas las demás condiciones se cumplieran.
+
+**Causa raíz:** La normalización de columnas no-SPACE era:
+
+```python
+temp = batch[condition_name].astype(str).str.strip()
+temp = temp.mask(temp.str.len() == 0, "BLANK")
+```
+
+Pandas convierte `NaN → "nan"` con `.astype(str)`. Como `len("nan") == 3 ≠ 0`, el `.mask(len == 0, "BLANK")` no sustituye el valor — la columna queda con la cadena `"nan"`. Al contrastarla contra `valid_values` (e.g. `['Y', 'N', 'BLANK']`) no hay match → fila excluida. La intención del token `"BLANK"` es exactamente representar "campo vacío o ausente" — un NULL debe mapearse a `"BLANK"`, no a `"nan"`.
+
+**Solución aplicada (2026-06-09):**
+
+```python
+temp = batch[condition_name].fillna("").astype(str).str.strip()
+temp = temp.mask(temp.str.len() == 0, "BLANK")
+```
+
+`fillna("")` antes de `astype(str)` garantiza: `NaN → "" → "" (strip) → len=0 → "BLANK"`.
+
+**Si vuelve a aparecer (filas con campos NULL no matchean reglas donde deberían):** Verificar que no haya `astype(str)` directo sobre columnas con nulls antes de normalizar. El patrón seguro es siempre `fillna("").astype(str).str.strip()` — tanto en `_apply_default` como en cualquier función nueva de normalización de condiciones.
+
+**Estado:** Resuelto en código local (2026-06-09). Pendiente subir a S3 (`s3://itl-0004-itx-dev-intchg-02-s3-reference/glue/scripts/visa/interchange.py`) y re-ejecutar `glue-vi-interchange`.
+
+---
+
 ## glue-vi-interchange: content_hash se perdía en el Parquet ITX por mapInPandas — RESUELTO (pendiente validar tras re-run)
 
 **Archivo:** `glue/scripts/visa/interchange/interchange.py` (función `evaluate_interchange_fees`)

@@ -148,7 +148,7 @@ def spark_type_from_layout(data_type: Any, length: Any = None, float_decimals: A
         return DateType()
  
     if dt in {"timestamp", "datetime"}:
-        # OJO: para Parquet TIMESTAMP(NANOS) evitamos TimestampType en la columna problemática.
+        # para Parquet TIMESTAMP(NANOS) evitamos TimestampType en la columna problemática.
         # La columna date_and_time_local_transaction_de_12 se fuerza a LongType más abajo.
         return TimestampType()
  
@@ -258,6 +258,12 @@ def build_pre_eval_pyspark(
         F.col("amount_transaction_de_4").cast("string").alias("amount_transaction"),
         F.col("currency_code_transaction_de_49").cast("long").alias("currency_code_transaction"),
         F.col("mastercard_assigned_id_pds_176").cast("string").alias("mastercard_assigned_id"),
+        F.col("card_present_data_de_22_6").alias("card_present_data"),
+        F.col("card_acceptor_country_code_de_43_6").alias("merchant_country"),
+        F.col("transaction_destination_institution_id_code_de_93").alias("transaction_destination_institution_id"),
+        F.col("transaction_type_identifier_pds_43").alias("transaction_type_identifier"),
+        F.col("electronic_commerce_indicator_3_pds_52_3").alias("ucaf_collection_id"),
+        F.col("electronic_commerce_indicator_2_pds_52_2").alias("token_flag")                                                    
     )
  
     calc = read_parquet(spark, calc_path, "CAL 1240").select(
@@ -269,8 +275,10 @@ def build_pre_eval_pyspark(
         F.col("funding_source").cast("string").alias("funding_source"),
         F.col("settlement_report_amount").cast("string").alias("settlement_report_amount"),
         F.col("settlement_report_currency_code").cast("string").alias("settlement_report_currency_code"),
+        F.col("card_program_identifier").alias("card_program_indicator"),
+        F.col("iar_country").alias("issuer_country")
     )
- 
+
     work = txn.join(calc, ["file_id", "ref_id", "file_idn"], "inner")
     work = work.withColumn("txn_date", derive_txn_date(work, "date_and_time_local_transaction"))
  
@@ -302,6 +310,16 @@ def build_pre_eval_pyspark(
         F.coalesce(F.trim(F.col("gcms_product_identifier")), F.lit("BLANK")).alias("gcms_product_identifier"),
         F.coalesce(F.trim(F.col("funding_source")), F.lit("BLANK")).alias("funding_source"),
         F.coalesce(F.col("mastercard_assigned_id"), F.lit("BLANK")).alias("mastercard_assigned_id"),
+
+        F.coalesce(F.col("card_present_data"), F.lit("BLANK")).alias("card_present_data"),
+        F.coalesce(F.col("merchant_country"), F.lit("BLANK")).alias("merchant_country"),
+        F.coalesce(F.col("transaction_destination_institution_id"), F.lit("BLANK")).alias("transaction_destination_institution_id"),
+        F.coalesce(F.col("transaction_type_identifier"), F.lit("BLANK")).alias("transaction_type_identifier"),
+        F.coalesce(F.col("ucaf_collection_id"), F.lit("BLANK")).alias("ucaf_collection_id"),
+        F.coalesce(F.col("token_flag"), F.lit("BLANK")).alias("token_flag"),
+
+        F.coalesce(F.trim(F.col("card_program_indicator")), F.lit("BLANK")).alias("card_program_indicator"),
+        F.coalesce(F.trim(F.col("issuer_country")), F.lit("BLANK")).alias("issuer_country"),
         "txn_date",
         F.col("currency_code_transaction").alias("currency_code_transaction"),
     )
@@ -633,6 +651,18 @@ def assign_rules_simple(df_eval: DataFrame, df_rules: DataFrame) -> DataFrame:
         _simple_rule_condition("gcms_product_identifier", "gcms_product_identifier"),
         _simple_rule_condition("funding_source", "funding_source"),
         _simple_rule_condition("mastercard_assigned_id", "mastercard_assigned_id"),
+        
+        _simple_rule_condition("card_present_data", "card_present_data"),
+        _simple_rule_condition("merchant_country", "merchant_country"),
+        _simple_rule_condition("transaction_destination_institution", "transaction_destination_institution_id"),
+        _simple_rule_condition("tti", "transaction_type_identifier"),
+        _simple_rule_condition("ucaf_collection_id", "ucaf_collection_id"),
+        _simple_rule_condition("token_flag", "token_flag"),
+        _simple_rule_condition("card_program_indicator", "card_program_indicator"),
+        _simple_rule_condition("issuer_country", "issuer_country"),
+
+   
+        
         _amount_rule_condition(work.columns),
     ]
  
@@ -640,35 +670,60 @@ def assign_rules_simple(df_eval: DataFrame, df_rules: DataFrame) -> DataFrame:
     for cond in simple_conditions:
         filtered = filtered.filter(cond)
  
-    ranked = (
+    ranked_rules = (
         filtered
+        .filter(F.col("r.rule_key").isNotNull())
         .withColumn(
             "rn",
             F.row_number().over(
-                Window.partitionBy(F.col("w.work_id")).orderBy(F.col("r.rule_key").asc_nulls_last())
+                Window.partitionBy(F.col("w.work_id"))
+                .orderBy(F.col("r.rule_key").asc_nulls_last())
             )
         )
         .filter(F.col("rn") == 1)
+        .select(
+            F.col("w.work_id").alias("work_id_match"),
+            F.col("r.rule_key").alias("rule"),
+            F.col("r.region_country_code").cast("string").alias("region_country_code"),
+            F.col("r.intelica_id").cast("string").alias("intelica_id"),
+            F.col("r.ird").cast("string").alias("rule_ird"),
+            F.col("r.rate_currency").cast("string").alias("rate_currency"),
+            F.col("r.rate_variable").cast("double").alias("rate_variable"),
+            F.col("r.rate_fixed").cast("double").alias("rate_fixed"),
+            F.col("r.rate_min").cast("double").alias("rate_min"),
+            F.col("r.rate_cap").cast("double").alias("rate_cap"),
+            F.col("r.valid_from").alias("valid_from"),
+            F.col("r.valid_until").alias("valid_until"),
+        )
     )
- 
-    return ranked.select(
+
+    final = (
+        work.alias("w")
+        .join(
+            ranked_rules.alias("r"),
+            F.col("w.work_id") == F.col("r.work_id_match"),
+            "left",
+        )
+    )
+
+    return final.select(
         F.col("w.file_id").alias("file_id"),
         F.col("w.ref_id").alias("ref_id"),
         F.col("w.file_idn").alias("file_idn"),
- 
-        F.coalesce(F.col("r.rule_key"), F.lit(0)).alias("rule"),
-        F.col("r.region_country_code").cast("string").alias("region_country_code"),
-        F.col("r.intelica_id").cast("string").alias("intelica_id"),
-        F.coalesce(F.col("r.ird").cast("string"), F.col("w.ird").cast("string")).alias("ird"),
- 
-        F.col("r.rate_currency").cast("string").alias("rate_currency"),
-        F.col("r.rate_variable").cast("double").alias("rate_variable"),
-        F.col("r.rate_fixed").cast("double").alias("rate_fixed"),
-        F.col("r.rate_min").cast("double").alias("rate_min"),
-        F.col("r.rate_cap").cast("double").alias("rate_cap"),
+
+        F.coalesce(F.col("r.rule"), F.lit(0)).alias("rule"),
+        F.col("r.region_country_code").alias("region_country_code"),
+        F.col("r.intelica_id").alias("intelica_id"),
+        F.coalesce(F.col("r.rule_ird"), F.col("w.ird").cast("string")).alias("ird"),
+
+        F.col("r.rate_currency").alias("rate_currency"),
+        F.col("r.rate_variable").alias("rate_variable"),
+        F.col("r.rate_fixed").alias("rate_fixed"),
+        F.col("r.rate_min").alias("rate_min"),
+        F.col("r.rate_cap").alias("rate_cap"),
         F.col("r.valid_from").alias("valid_from"),
         F.col("r.valid_until").alias("valid_until"),
- 
+
         F.col("w.jurisdiction").alias("jurisdiction"),
         F.col("w.processing_code").alias("processing_code"),
         F.col("w.card_acceptor_business_code").alias("card_acceptor_business_code"),
@@ -683,7 +738,16 @@ def assign_rules_simple(df_eval: DataFrame, df_rules: DataFrame) -> DataFrame:
         F.col("w.gcms_product_identifier").alias("gcms_product_identifier"),
         F.col("w.funding_source").alias("funding_source"),
         F.col("w.mastercard_assigned_id").alias("mastercard_assigned_id"),
-    )
+        
+        F.col("w.card_present_data").alias("card_present_data"),
+        F.col("w.merchant_country").alias("merchant_country"),
+        F.col("w.transaction_destination_institution_id").alias("transaction_destination_institution_id"),
+        F.col("w.transaction_type_identifier").alias("transaction_type_identifier"),
+        F.col("w.ucaf_collection_id").alias("ucaf_collection_id"),
+        F.col("w.token_flag").alias("token_flag"),
+        F.col("w.card_program_indicator").alias("card_program_indicator"),
+        F.col("w.issuer_country").alias("issuer_country"),
+    )       
 
 def calculate_mastercard_fee_pyspark(
     df_assign: DataFrame,
@@ -1085,7 +1149,9 @@ def run_interchange_mti(
     rules_path = f"{s3_reference}/mc_rules/"
  
     # Salida final en STAGING, no en carpeta local.
-    output_base = s3_staging.rstrip("/")
+    #output_base = s3_staging.rstrip("/")
+    output_base = os.getenv("OUTPUT_BASE",s3_staging.rstrip()).rstrip("/")
+    
     target_subdir = f"600_IPM_{mti}_ITX"
  
     # Para Glue para pruebas
@@ -1161,17 +1227,60 @@ def run_interchange_mti(
                 df_rules=df_rules,
             )
 
-            #debug_pre_eval(df_eval)
+            if os.getenv("DEBUG_WRITE_STEPS", "0") == "1":
+                pre_eval_file = build_output_file_path(
+                output_base=output_base,
+                client_id=client_id,
+                file_type=file_type,
+                process_date=file_date,
+                source_file_name=key,
+                target_subdir=f"DEBUG_{mti}_PRE_EVAL",
+            )
+            #write_single_parquet(df_eval, pre_eval_file, aws_region)
             
             df_assign = assign_rules_simple(
                 df_eval=df_eval,
                 df_rules=df_rules,
             )
+
+            if os.getenv("DEBUG_WRITE_STEPS", "0") == "1":
+                assign_file = build_output_file_path(
+                output_base=output_base,
+                client_id=client_id,
+                file_type=file_type,
+                process_date=file_date,
+                source_file_name=key,
+                target_subdir=f"DEBUG_{mti}_ASSIGN",
+            )
+            #write_single_parquet(df_assign, assign_file, aws_region)
  
             df_fee = calculate_mastercard_fee_pyspark(
                 df_assign=df_assign,
                 df_exchange_rate=df_exchange_rate,
                 brand_fx_eval="MASTERCARD",
+            )
+
+            df_fee_final = df_fee.select(
+                F.col("file_id"),
+                #F.col("file_type"),
+                F.col("file_idn"),
+                #F.col("file_date"),
+                F.col("rate_currency"),
+                F.col("rate_variable"),
+                F.col("rate_fixed"),
+                F.col("rate_min"),
+                F.col("rate_cap"),
+                F.col("amount_transaction"),
+                F.col("currency_code_transaction").cast("string").alias("currency_transaction"),
+                F.col("intelica_id"),
+                F.col("calculated_fee").alias("calculated_value"),
+                F.col("region_country_code"),
+                F.col("ird"),
+                F.col("valid_from"),
+                F.col("valid_until"),
+                
+                #F.lit("GLUE").alias("app_creation_user"),
+                #F.current_timestamp().alias("app_creation_date"),
             )
  
             final_file = build_output_file_path(
@@ -1183,7 +1292,7 @@ def run_interchange_mti(
                 target_subdir=target_subdir,
             )
  
-            write_single_parquet(df_fee, final_file, aws_region)
+            write_single_parquet(df_fee_final, final_file, aws_region)
  
             processed += 1
             log(f"[PAIR] OK MTI={mti} key={key} output={final_file}")

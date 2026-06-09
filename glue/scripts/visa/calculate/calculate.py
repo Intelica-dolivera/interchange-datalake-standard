@@ -872,22 +872,24 @@ def calc_jurisdiction_assigned_sms(df: DataFrame) -> DataFrame:
 def calc_timeliness_draft(df: DataFrame) -> DataFrame:
     """
     timeliness para BASEII/draft.
-    Días entre purchase_date y central_processing_date, excluyendo domingos.
+    Dias no-domingo en el intervalo abierto (purchase_date, central_processing_date).
+    Formula: total_days - 1 - sundays_in_window
+    sundays_in_window = max(0, floor((window_size + 6 - offset) / 7))
+      donde window_size = total_days - 1
+            offset = dias desde purchase+1 hasta el primer domingo (0 si purchase+1 es domingo)
     """
     df = df.withColumn("_central_date", F.to_date(F.col("central_processing_date")))
     df = df.withColumn("_purchase_date", F.to_date(F.col("purchase_date")))
     df = df.withColumn("_total_days", F.datediff(F.col("_central_date"), F.col("_purchase_date")))
-    
-    df = df.withColumn("_start_for_sundays", F.date_add(F.col("_purchase_date"), 1))
-    df = df.withColumn("_end_for_sundays", F.date_sub(F.col("_central_date"), 1))
-    df = df.withColumn("_days_between", F.datediff(F.col("_end_for_sundays"), F.col("_start_for_sundays")) + 1)
-    df = df.withColumn("_start_dow", F.dayofweek(F.col("_start_for_sundays")))
-    df = df.withColumn("_full_weeks", F.floor(F.col("_days_between") / 7))
-    df = df.withColumn("_remaining_days", F.col("_days_between") % 7)
-    df = df.withColumn("_days_to_next_sunday", F.when(F.col("_start_dow") == 1, F.lit(0)).otherwise(8 - F.col("_start_dow")))
-    df = df.withColumn("_extra_sunday", F.when((F.col("_days_between") > 0) & (F.col("_remaining_days") >= F.col("_days_to_next_sunday")), F.lit(1)).otherwise(F.lit(0)))
-    df = df.withColumn("_sundays_count", F.when(F.col("_days_between") <= 0, F.lit(0)).otherwise(F.col("_full_weeks") + F.col("_extra_sunday")))
-    
+    # dayofweek de purchase+1: Spark Sun=1..Sat=7; offset = (8 - dow) % 7
+    df = df.withColumn("_start_dow", F.dayofweek(F.date_add(F.col("_purchase_date"), 1)))
+    df = df.withColumn(
+        "_sundays_count",
+        F.greatest(
+            F.lit(0),
+            F.floor((F.col("_total_days") - 1 + 6 - (8 - F.col("_start_dow")) % 7) / 7)
+        )
+    )
     df = df.withColumn(
         "calc_timeliness",
         F.when(F.col("_total_days") == 0, F.lit(0))
@@ -895,11 +897,7 @@ def calc_timeliness_draft(df: DataFrame) -> DataFrame:
          .otherwise(F.col("_total_days") - 1 - F.col("_sundays_count"))
          .cast(LongType())
     )
-    
-    df = df.drop("_central_date", "_purchase_date", "_total_days", "_start_for_sundays", "_end_for_sundays",
-                 "_days_between", "_start_dow", "_full_weeks", "_remaining_days", "_days_to_next_sunday",
-                 "_extra_sunday", "_sundays_count")
-    
+    df = df.drop("_central_date", "_purchase_date", "_total_days", "_start_dow", "_sundays_count")
     return df
 
 

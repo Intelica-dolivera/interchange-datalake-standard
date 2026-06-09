@@ -78,7 +78,6 @@ _CLN_META_FIELDS = [
     StructField("ref_id",                 LongType(),   True),
     StructField("function_code",          LongType(),   True),
     StructField("file_id",                StringType(), True),
-    StructField("file_type",              StringType(), True),
     StructField("file_processing_date",   StringType(), True),
 ]
  
@@ -217,8 +216,8 @@ _glue_logger = glueContext.get_logger()
 def log_info(msg: str)  -> None: _glue_logger.info(f"[MC-CALC] {msg}")
 def log_warn(msg: str)  -> None: _glue_logger.warn(f"[MC-CALC] WARNING — {msg}")
 def log_error(msg: str) -> None: _glue_logger.error(f"[MC-CALC] ERROR — {msg}")
-
-
+ 
+ 
 # =============================================================================
 # 3. S3 PATH HELPERS
 # =============================================================================
@@ -1068,7 +1067,7 @@ def calculate_final_fields(
  
     # ── Base desde CLN ────────────────────────────────────────────────────────
     df = df_cln.select(
-        "ref_id", "file_id", "file_idn", "file_type", "type_mti", "file_dt"
+        "ref_id", "file_id", "file_idn", "type_mti", "file_dt"
     ).withColumn("client_id", F.lit(client_id).cast(StringType()))
  
     # ── pre2 (n=1): solo columnas necesarias, renombradas para evitar ambigüedad ──
@@ -1125,7 +1124,6 @@ def calculate_final_fields(
         F.col("file_id").cast(StringType()),
         F.col("ref_id").cast(LongType()),
         F.col("file_idn").cast(StringType()),
-        F.col("file_type").cast(StringType()),
         F.col("client_id").cast(StringType()),
         F.col("file_dt").cast(LongType()),
         F.col("type_mti").cast(LongType()),
@@ -1414,6 +1412,7 @@ def process_file(
     input_s3_key: str,
     staging_s3_url: str,
     file_id: str,
+    file_type: str,
     client_data: dict,
     df_iar: DataFrame,
     country_df: DataFrame,
@@ -1464,7 +1463,7 @@ def process_file(
  
     try:
         # 1. Leer este parquet individual (sin detección Hive)
-        df_cln  = load_parquet_safe(input_file_path, schema=cln_schema).cache()
+        df_cln  = load_parquet_safe(input_file_path, schema=cln_schema).withColumn("file_type", F.lit(file_type)).cache()
  
         # 2. Pre2 (PASOS 2+3+4)
         df_pre2 = calculate_pre2(
@@ -1657,6 +1656,7 @@ def main():
             input_s3_key=input_s3_key,
             staging_s3_url=s3_staging_url,
             file_id=file_id,
+            file_type=file_type,
             client_data=client_data,
             df_iar=df_iar,
             country_df=country_df,

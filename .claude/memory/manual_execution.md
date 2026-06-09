@@ -302,3 +302,43 @@ aws dynamodb update-item `
 Nota: las claves reales de `visa_fields-02` son `type_record` (HASH) + `column_name` (RANGE).
 
 **Resultado de esta sesión (2026-06-08):** handler.py subido al Lambda `lmbd-vi-clean` por el usuario — pendiente confirmar resultado en producción.
+
+---
+
+## Sesión de debugging 2026-06-09 — bug fillna(0.0) en glue-vi-interchange (fees zerados), fix y subida a S3
+
+**Hallazgo:** Al comparar `sum(interchange_fee_amount)` por jurisdiction y source_currency contra el legacy PostgreSQL, se detectaron diferencias en jurisdicciones off-us EUR (−289 USD) e interregional JPY (+29 JPY). Tras descartar que la causa fuera el cálculo de timeliness (ya corregido) o el _apply_default NaN (ya corregido), se identificaron dos problemas:
+
+**Bug 1 — `fillna(0.0)` en `fee_min`/`fee_cap` (RESUELTO):**
+`process_pandas_partitions` aplicaba `.fillna(0.0)` a `interchange_fee_min` e `interchange_fee_cap`. Reglas sin cap/min definido tienen `NaN`; `fillna(0.0)` lo convierte a `0.0` → Spark lo recibe como valor real → `coalesce(0.0, +inf) = 0.0` → `least(fee_amount, 0.0) = 0` — todos los fees positivos de esas reglas quedaban en cero.
+
+**Fix aplicado (2026-06-09):** Eliminado `.fillna(0.0)` de `interchange_fee_min` e `interchange_fee_cap` (solo se deja `.astype(float)`). NaN → NULL en Spark → coalesce(±inf) → sin restricción.
+
+### Subir el script corregido al S3
+
+```powershell
+aws s3 cp `
+  glue/scripts/visa/interchange/interchange.py `
+  s3://itl-0004-itx-dev-intchg-02-s3-reference/glue/scripts/visa/interchange.py `
+  --profile itx-dev
+```
+
+**Resultado de esta sesión (2026-06-09):** subida completada. El siguiente `start-job-run` de `itl-0004-itx-dev-intchg-02-glue-vi-interchange` usará automáticamente esta versión.
+
+**Bug 2 — Diferencia residual interregional JPY: intelica_id 1065 vs 1055 (PENDIENTE):**
+La diferencia de −29.64 para interregional JPY (1 transacción, source_amount=20,220 JPY) es por rule matching incorrecto: legacy asigna 1065 "ATM AF JPN" (fee_fixed=0.50 USD, fee_currency=USD) pero el nuevo sistema asigna 1055 "ATM AF" (fee_fixed=0, fee_currency=None). Son reglas distintas con monedas distintas — la comparación numérica directa no tiene sentido. Requiere investigar qué condición en `visa_rules` diferencia ambas reglas y por qué no se aplica en el nuevo sistema.
+
+**Bug 3 — Convención de exchange_value pendiente de verificar:**
+El legacy aplica `exchange_value` sobre `source_amount` (resultado en fee_currency). El prototipo lo aplica sobre los componentes de la regla (resultado en source_currency). El usuario prefiere source_currency. Requiere verificar si `exchange_value` en S3 `exchange_rate/data.parquet` es `fee_ccy/source_ccy` (~1.08 para EUR→USD) o `source_ccy/fee_ccy` (~0.926). Verificar con:
+```python
+import pandas as pd
+df = pd.read_parquet('tst_files/exchange_rate_data.parquet')  # descargar antes
+print(df[(df['currency_from']=='EUR') & (df['currency_to']=='USD')][['exchange_value']].head())
+```
+
+### Pendiente (próxima sesión)
+
+1. Re-ejecutar `glue-vi-interchange` con los mismos argumentos del file_id `D44C4427AED04C1E078AA86B275060FA`
+2. Comparar `sum(interchange_fee_amount)` por jurisdiction/source_currency — verificar que off-us EUR ya no tiene diferencia de −289
+3. Investigar condición diferenciadora entre reglas 1055 y 1065 en `visa_rules.parquet`
+4. Verificar dirección del `exchange_value` en S3 reference
