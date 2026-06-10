@@ -329,6 +329,7 @@ Patron de nomenclatura: `itl-0004-itx-{env}-intchg-02-glue-{marca}-{job}`
 | `itl-0004-itx-dev-intchg-02-glue-vi-interchange` | Visa | G.2X × 4 | Reporte consolidado de interchange |
 | `itl-0004-itx-dev-intchg-02-glue-mc-calculate` | MC | G.1X × 2 | Calculo de fees Mastercard |
 | `itl-0004-itx-dev-intchg-02-glue-mc-interchange` | MC | G.1X × 2 | Reporte consolidado interchange MC |
+| `itl-0004-itx-dev-intchg-02-glue-test-1` | Visa/MC | G.1X × 2 | Reporte de transacciones (`glue-vi-mc-reporting` / `get_transaction.py`) — un cliente por ejecucion. Nombre real pendiente de renombrar (ver Pendientes). |
 
 Glue Version: 4.0
 
@@ -349,6 +350,8 @@ Cada Glue job tiene un `args.json` junto a su script con los `DefaultArguments` 
 **Fix vi-interchange — fillna(0.0) en fee_min/fee_cap zeroeaba fees positivos (2026-06-09):** `process_pandas_partitions` aplicaba `.fillna(0.0)` a `interchange_fee_min` e `interchange_fee_cap` antes de yield. Reglas sin cap definido tienen `fee_cap=NaN`; `fillna(0.0)` lo convertia a `0.0`, que Spark recibia como valor (no NULL) — `coalesce(0.0, +inf) = 0.0` → `least(fee_amount, 0.0) = 0` zeroeaba todos los fees positivos de esas reglas. Mismo problema con `fee_min=NaN → 0.0` flooreando fees negativos. Solucion: eliminar `.fillna(0.0)` de ambas columnas (dejar solo `.astype(float)`) — NaN de pandas → NULL en Spark → `coalesce(NULL, ±inf)` → sin restriccion. Detalle en `.claude/memory/gotchas.md`.
 
 **Pendiente vi-interchange — matching incorrecto intelica_id ATM JPY (detectado 2026-06-09):** Transaccion interregional JPY (source_currency=392) asignada a regla 1055 "ATM AF" (fee_variable=0.0015, sin fee_fixed, fee_currency=None) en vez de 1065 "ATM AF JPN" (fee_variable=0.0015, fee_fixed=0.50 USD). La regla 1065 es especifica para ATM en Japon; el nuevo sistema no esta aplicando la condicion que la distingue. Diferencia numerica refleja monedas distintas (0.69 USD legacy vs 30.33 JPY nuevo) — no comparables directamente. Requiere investigar que campo en visa_rules diferencia ambas reglas. Detalle en `.claude/memory/gotchas.md`.
+
+**Fix glue-test-1 (glue-vi-mc-reporting) — load_exchange_rates() leia tabla incompleta con columnas incorrectas, "Column 'to_currency' does not exist" (2026-06-10):** `load_exchange_rates()` en `glue/scripts/reports/get_transaction/get_transaction.py` leia `exchange-rates/brand={brand_path}/exchange_date=YYYY-MM-DD/` (cobertura incompleta) asumiendo columnas `from_currency, to_currency, fx_rate` que no existen ahi (real: `currency_from, currency_to, currency_from_code, currency_to_code, exchange_value`). `_join_exchange_rates()` fallaba con `Column 'to_currency' does not exist` justo despues de cargar 561,711 filas de `baseii_drafts` (confirmando que el fix de NullType de `lmbd-vi-store` funciono) — el job terminaba `SUCCEEDED` pero sin generar reporte (`No data for EBGR in [...], skipping`). Solucion: `load_exchange_rates()` ahora lee `exchange_rate/rate_date=YYYY-MM-DD/` (cubre 2025-12-01..2026-04-30, ambas marcas via columna `brand`='VISA'/'MasterCard', filtro case-insensitive) y renombra `rate_date→exchange_date`, `currency_from→from_currency`, `currency_to→to_currency`, `exchange_value→fx_rate` para no tocar `_join_exchange_rates()`. Nota: hay un nuevo metodo de extraccion de tipo de cambio Visa en desarrollo — revisar `load_exchange_rates()` cuando este disponible. Detalle en `.claude/memory/gotchas.md`.
 
 ---
 
@@ -438,6 +441,8 @@ terraform apply
 - Mover scripts Glue MC de bucket `itl-0004-itx-dev-poc-02-reference/` al bucket oficial `itl-0004-itx-dev-intchg-02-s3-reference/`
 - Configurar retencion de logs en CloudWatch (variable `log_retention_days = 30` en Terraform ya esta lista)
 - Testing end-to-end en ambiente empresarial
+- Renombrar `glue-test-1` (job real de `glue-vi-mc-reporting` / `get_transaction.py`) a un nombre que siga la convencion (ej. `itl-0004-itx-dev-intchg-02-glue-vi-mc-reporting`); existen ademas `glue-test-2/3/4` sin uso conocido — verificar antes de tocarlos
+- `load_exchange_rates()` (reporting) usa `exchange_rate/rate_date=YYYY-MM-DD/` como fuente de tipo de cambio — hay un nuevo metodo de extraccion de tipo de cambio Visa en desarrollo que podria reemplazar/complementar esta fuente; revisar `load_exchange_rates()` cuando este disponible
 
 ---
 

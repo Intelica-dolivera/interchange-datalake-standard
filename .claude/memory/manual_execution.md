@@ -342,3 +342,125 @@ print(df[(df['currency_from']=='EUR') & (df['currency_to']=='USD')][['exchange_v
 2. Comparar `sum(interchange_fee_amount)` por jurisdiction/source_currency — verificar que off-us EUR ya no tiene diferencia de −289
 3. Investigar condición diferenciadora entre reglas 1055 y 1065 en `visa_rules.parquet`
 4. Verificar dirección del `exchange_value` en S3 reference
+
+---
+
+## Sesión de debugging 2026-06-10 — columnas NullType en operational baseii_drafts (message_reason_code, type_of_purchase), fix generalizado en lmbd-vi-store y reprocesamiento masivo
+
+**Contexto:** `glue-test-1` (`get_transaction.py`) fallaba con `SchemaColumnConvertNotSupportedException` al leer `EBGR/VISA/baseii_drafts/file_type=IN/date=2026-01-0X/` (directorio completo, varios `file_id` por fecha). Primero en `message_reason_code` (Expected: string, Found: INT32), luego — tras un primer fix puntual — en `type_of_purchase`.
+
+**Root cause:** columnas del CAL 100% null para ciertos `file_id` se degradan a `pa.null()` (NullType → INT32 en Parquet) durante el round-trip pandas/pyarrow en `lmbd-vi-store`. Otros archivos del mismo directorio tienen la columna como `string` real → Spark no puede leer el directorio con un schema único. Detalle completo en `gotchas.md` → "lmbd-vi-store: columnas NullType en operational rompen lectura de directorio completo con Spark".
+
+**Fix aplicado y desplegado por el usuario:** generalización de `_cal_int_cols` → `_cal_dtype_map` en `lambdas/visa/store/src/handler.py` — restaura tanto `int64+nulls→float64` como `string-100%-null→NullType`.
+
+### Paso 1 — Mapear content_hash → file_id
+
+```powershell
+aws dynamodb scan `
+  --profile itx-dev `
+  --table-name itl-0004-itx-dev-dynamo-file_control-02 `
+  --filter-expression "content_hash = :h1 OR content_hash = :h2" `
+  --expression-attribute-values '{":h1": {"S": "<content_hash_1>"}, ":h2": {"S": "<content_hash_2>"}}' `
+  --query "Items[].{file_id:file_id.S, content_hash:content_hash.S, store_result:store_result.S}"
+```
+`store_result` (JSON) contiene `outputs[].cln_s3_key` para cada `output_type` (BASEII, VSS_110/120/130/140) — necesario para construir el payload de `lmbd-vi-store`.
+
+### Paso 2 — Payload de reprocesamiento (un output_type por invocación)
+
+```json
+{
+  "client_id": "EBGR",
+  "file_id": "<file_id>",
+  "brand": "VISA",
+  "file_type": "IN",
+  "file_date": "<YYYY-MM-DD>",
+  "content_hash": "<content_hash>",
+  "outputs": [
+    {
+      "output_type": "BASEII",
+      "s3_key": "EBGR/VISA/300_baseii_cln_drafts/file_type=IN/date=<YYYY-MM-DD>/<content_hash>.parquet"
+    }
+  ]
+}
+```
+
+```powershell
+aws lambda invoke `
+  --profile itx-dev `
+  --function-name itl-0004-itx-dev-intchg-02-lmbd-vi-store `
+  --payload "file://payload.json" `
+  --cli-binary-format raw-in-base64-out `
+  response.json
+```
+
+### Paso 3 — Escanear NullType en todo un directorio (sin descargar archivos completos)
+
+`tst_files/scan_nulltype_columns.py` — usa `pyarrow.fs.S3FileSystem` (credenciales del perfil `itx-dev`, region `eu-south-2`) + `pq.ParquetFile(...).schema_arrow` para leer solo el footer de cada Parquet bajo un prefijo S3, y reporta qué columnas tienen `pa.types.is_null(f.type) == True`. Ajustar `BUCKET`/`PREFIX` al cliente/marca/tipo a auditar.
+
+```powershell
+python tst_files/scan_nulltype_columns.py
+```
+
+### Resultado de esta sesión (2026-06-10)
+
+- Escaneo inicial de `EBGR/VISA/baseii_drafts/file_type=IN/` (56 archivos, 2026-01-01..2026-01-30): **54/56** con `type_of_purchase` en NullType, **27/54** además con `message_reason_code`.
+- Reprocesados con `lmbd-vi-store` (output_type=BASEII, handler corregido): **56/56 SUCCESS** (2 ya habían sido reprocesados antes en la misma sesión, 4 para completar el rango 1-5 enero, 50 para el resto de fechas hasta el 30 de enero).
+- Re-escaneo final: **0/56** con columnas NullType.
+- `glue-test-1` relanzado para rango 2026-01-01..2026-01-05 (`report_suffix=20260105_tst`) → JobRunId `jr_b0e8b19c35c6128524a4bb5cd8f137096938c453fe60c9a003630bc22c5b732c` — pendiente confirmar resultado.
+
+### Pendiente (próxima sesión)
+
+1. Confirmar resultado de `jr_b0e8b19c35c6128524a4bb5cd8f137096938c453fe60c9a003630bc22c5b732c`.
+2. Si SUCCESS, considerar correr el mismo escaneo (`scan_nulltype_columns.py`) sobre `SBSA` y `BTRLRO` (otra convención de paths: `BTRLRO/VI/...`) y sobre `vss_110/120/130/140` de EBGR, antes de generar reportes que cubran esos clientes/tipos.
+
+---
+
+## Sesión de debugging 2026-06-10 (cont.) — bug to_currency en glue-test-1, fix y re-run
+
+**Contexto:** El run `jr_b0e8b19c35c6128524a4bb5cd8f137096938c453fe60c9a003630bc22c5b732c` (punto 1 del pendiente anterior) terminó `SUCCEEDED` pero sin generar reporte — ver gotcha "glue-test-1 (glue-vi-mc-reporting): load_exchange_rates() leía tabla incompleta y con columnas incorrectas" en `gotchas.md`.
+
+### Cómo encontrar el ScriptLocation real de un Glue job
+
+El nombre conceptual `glue-vi-mc-reporting` no es el nombre real desplegado. Para encontrarlo:
+
+```powershell
+aws glue get-jobs --profile itx-dev --query "Jobs[].Name" --output table
+# -> itl-0004-itx-dev-intchg-02-glue-test-1 (entre otros glue-test-2/3/4)
+
+aws glue get-job --profile itx-dev --job-name itl-0004-itx-dev-intchg-02-glue-test-1 `
+  --query "Job.Command.ScriptLocation" --output text
+# -> s3://itl-0004-itx-dev-intchg-02-s3-reference/glue/scripts/report/get_transaction.py
+```
+
+### Verificar schema real de una fuente de referencia (sin descargar el Parquet completo)
+
+`tst_files/check_xrate_schema.py` (mismo patrón que `scan_nulltype_columns.py` — `pyarrow.fs.S3FileSystem` + `pq.ParquetFile(path, filesystem=fs).schema_arrow`, además `.read().to_pandas()` para inspeccionar valores de muestra de un solo archivo). Se usó para comparar:
+- `exchange-rates/brand=Visa/exchange_date=2026-01-01/*.parquet` → columnas `currency_from, currency_to, currency_from_code, currency_to_code, exchange_value` (sin `exchange_date`, viene de la partición). No tenía fila `EUR→USD`.
+- `exchange_rate/rate_date=2026-01-05/*.parquet` → mismas columnas + `brand` (`VISA`/`MasterCard`) + `year`/`month`. Sí tenía `VISA EUR→USD` (fila única, `exchange_value≈1.1766`).
+
+### Subir el script corregido y re-ejecutar
+
+```powershell
+aws s3 cp glue/scripts/reports/get_transaction/get_transaction.py `
+  s3://itl-0004-itx-dev-intchg-02-s3-reference/glue/scripts/report/get_transaction.py `
+  --profile itx-dev
+
+# Recuperar los argumentos del run anterior para reusarlos:
+aws glue get-job-run --profile itx-dev --job-name itl-0004-itx-dev-intchg-02-glue-test-1 `
+  --run-id jr_b0e8b19c35c6128524a4bb5cd8f137096938c453fe60c9a003630bc22c5b732c `
+  --query "JobRun.Arguments"
+
+# Cambiar --report_suffix para no pisar el output del run anterior (que de todos modos no generó nada)
+# y relanzar:
+aws glue start-job-run --profile itx-dev --job-name itl-0004-itx-dev-intchg-02-glue-test-1 `
+  --arguments file://tst_files/glue-test1-run-args.json --query "JobRunId" --output text
+```
+
+**Resultado de esta sesión (2026-06-10):** script corregido subido. Relanzado con `report_suffix=20260105_tst2` → JobRunId `jr_ecbf44e09aa4db4cabceb597478ffc21b18b27a9b4dc02f7f020fe039c284c3d` — **pendiente confirmar resultado** (verificar `JobRunState=SUCCEEDED` y que esta vez sí exista output en `s3-analytics` para EBGR 2026-01-01..2026-01-05, sin el mensaje "No data... skipping").
+
+### Pendiente (próxima sesión)
+
+1. Confirmar resultado de `jr_ecbf44e09aa4db4cabceb597478ffc21b18b27a9b4dc02f7f020fe039c284c3d` — revisar `s3://itl-0004-itx-dev-intchg-02-s3-analytics/` para el output con sufijo `20260105_tst2`.
+2. Si hay output, validar el contenido del reporte (31 columnas `FINAL_COLS`, `xr1_rate`/`xr2_rate` no nulos para filas con moneda distinta a EUR).
+3. Pendiente del punto 2 de la sesión anterior: escanear NullType en `SBSA`/`BTRLRO`/`vss_110-140`.
+4. Cuando esté disponible el nuevo método de extracción de tipo de cambio Visa, revisar si `load_exchange_rates()` debe cambiar de fuente nuevamente.

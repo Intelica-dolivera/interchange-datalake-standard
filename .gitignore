@@ -21,3 +21,5 @@ itx-audit-*/
 Thumbs.db
 *.log
 *inventory-to-rename.txt
+tst_file*
+sql*

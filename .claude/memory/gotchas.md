@@ -4,6 +4,69 @@ Problemas encontrados durante el desarrollo, con su causa raíz y solución reco
 
 ---
 
+## glue-test-1 (glue-vi-mc-reporting): load_exchange_rates() leía tabla incompleta y con columnas incorrectas — "Column 'to_currency' does not exist" — RESUELTO (pendiente confirmar re-run)
+
+**Archivo:** `glue/scripts/reports/get_transaction/get_transaction.py` (función `load_exchange_rates`, usada por `_join_exchange_rates`)
+**Detectado:** 2026-06-10
+
+**Síntoma:** Tras resolver el bug de columnas NullType (ver gotcha siguiente), se relanzó `glue-test-1` (JobRunId `jr_b0e8b19c35c6128524a4bb5cd8f137096938c453fe60c9a003630bc22c5b732c`) para EBGR 2026-01-01..2026-01-05. El job terminó `SUCCEEDED` (`Error=None`, `ExecutionTime=95s`) pero el log `/aws-glue/jobs/error` mostraba:
+```
+GlueLogger: [read_operational] Loaded EBGR/VISA/baseii_drafts: 561711 rows
+GlueLogger: [BASEII] EBGR/2026-01-01_2026-01-05: Column 'to_currency' does not exist.
+  Did you mean one of the following? [currency_to, currency_from, currency_to_code, exchange_date, currency_from_code, exchange_value];
+...
+[process_client_range] No data for EBGR/2026-01-01_2026-01-05
+No data for EBGR in [2026-01-01, 2026-01-05], skipping
+```
+Es decir: los 561,711 registros de `baseii_drafts` se cargaron correctamente (confirmando que el fix de NullType funcionó), pero `_join_exchange_rates()` lanzó una excepción capturada silenciosamente que dejó la rama BASEII sin filas. Como EBGR no tiene SMS, el job terminó sin generar ningún reporte — `SUCCEEDED` con cero output.
+
+**Causa raíz:** `load_exchange_rates()` leía `s3://{BUCKET_REF}/exchange-rates/brand={brand_path}/exchange_date=YYYY-MM-DD/` y asumía columnas `from_currency, to_currency, fx_rate, exchange_date` (declaradas en el docstring y en el schema del fallback vacío). El Parquet real en esa ruta tiene columnas `currency_from, currency_to, currency_from_code, currency_to_code, exchange_value` (+ `exchange_date` como partición Hive) — `_join_exchange_rates()` hace `xr.filter(F.col("to_currency") == report_currency)` y falla porque `to_currency` no existe.
+
+Además, esa ruta (`exchange-rates/brand=Visa/`) tiene **cobertura incompleta**: no contiene el par `EUR→USD` para `exchange_date=2026-01-01` (necesario para el reporte EBGR, que reporta en EUR).
+
+**Cómo se detectó:** `aws glue get-job-run ... --query "JobRun.{State,Error,ExecutionTime}"` mostraba `SUCCEEDED`, pero el usuario notó "un error raro en el log". Se descargó `/aws-glue/jobs/error` (stream=JobRunId, `MSYS_NO_PATHCONV=1 aws logs get-log-events ...`) y se hizo `grep -niE "error|exception"` — 2 líneas `ERROR` de `GlueLogger`, una de ellas el `Column 'to_currency' does not exist` con el plan Spark mostrando el schema real del DataFrame.
+
+**Solución aplicada (2026-06-10):** `load_exchange_rates()` reescrita para leer `s3://{BUCKET_REF}/exchange_rate/rate_date=YYYY-MM-DD/` (cubre 2025-12-01..2026-04-30, ambas marcas en una tabla con columna `brand`='VISA'/'MasterCard'). Filtra `F.upper(F.col("brand")) == brand_path.upper()` y renombra `rate_date→exchange_date`, `currency_from→from_currency`, `currency_to→to_currency`, `exchange_value→fx_rate` — sin tocar `_join_exchange_rates()` ni las funciones `transform_*`. Validado: `VISA EUR→USD` existe en `rate_date=2026-01-05` (28,056 filas VISA, 22,650 MasterCard en ese día). Detalle de la decisión en `decisions.md` → "Por qué glue-vi-mc-reporting (glue-test-1) lee exchange_rate/rate_date=...".
+
+Subido a `s3://itl-0004-itx-dev-intchg-02-s3-reference/glue/scripts/report/get_transaction.py`. Re-lanzado: JobRunId `jr_ecbf44e09aa4db4cabceb597478ffc21b18b27a9b4dc02f7f020fe039c284c3d` (`report_suffix=20260105_tst2`) — **pendiente confirmar resultado** (debe generar output en `s3-analytics`, no "No data... skipping").
+
+**Si vuelve a aparecer (`Column 'X' does not exist` en `_join_exchange_rates` o columnas de `load_exchange_rates`):** verificar el schema real de `s3://itl-0004-itx-dev-intchg-02-s3-reference/exchange_rate/rate_date=<fecha>/*.parquet` (columnas: `brand, currency_from, currency_to, currency_from_code, currency_to_code, exchange_value, year, month`) — puede haber cambiado si el nuevo método de extracción de tipo de cambio Visa (en desarrollo) reemplaza esta tabla.
+
+**Nota:** hay un nuevo método de extracción de tipo de cambio Visa en desarrollo (mencionado por el usuario 2026-06-10) — cuando esté disponible, revisar si `load_exchange_rates()` debe apuntar a esa nueva fuente.
+
+---
+
+## lmbd-vi-store: columnas NullType en operational rompen lectura de directorio completo con Spark (SchemaColumnConvertNotSupportedException) — RESUELTO
+
+**Archivo:** `lambdas/visa/store/src/handler.py` (función `store_output`)
+**Detectado:** 2026-06-10
+
+**Síntoma:** El reporting job `glue-test-1` (`get_transaction.py`) fallaba con:
+```
+SchemaColumnConvertNotSupportedException: column 'message_reason_code' ... Expected: string, Found: INT32
+```
+y luego, tras un primer fix parcial, con el mismo error en otra columna (`type_of_purchase`). Ocurría al hacer `spark.read.parquet(base_path)` sobre `EBGR/VISA/baseii_drafts/file_type=IN/date=2026-01-0X/` — un directorio con varios archivos Parquet (uno por `file_id`).
+
+**Causa raíz:** Algunas columnas del CAL (`message_reason_code`, `type_of_purchase`, posiblemente otras) son **100% null** para ciertos `file_id`. En `lmbd-vi-store`, `pq.read_table(...).to_pandas()` representa esa columna como `object` con puros `None`; al reconstruir con `pa.Table.from_pandas(merged)`, PyArrow no puede inferir el tipo real y le asigna `pa.null()` (NullType → se escribe como `INT32` en Parquet). Otros archivos del mismo directorio, donde la columna SÍ tiene valores, la escriben correctamente como `string` (BINARY). `spark.read.parquet(directorio)` sin `mergeSchema` toma el schema de UN archivo como canónico para todo el directorio → el vectorized reader no soporta convertir `INT32 (NullType) ↔ BINARY (string)` → excepción.
+
+**Cómo se detectó la magnitud real:** Se escribió `tst_files/scan_nulltype_columns.py` (lee solo el footer/schema de cada Parquet via `pyarrow.fs.S3FileSystem`, sin descargar el archivo completo) y se escaneraron los 56 archivos de `EBGR/VISA/baseii_drafts/file_type=IN/` (2026-01-01 a 2026-01-30). Resultado: **54 de 56** tenían `type_of_purchase` en NullType, y **27 de esos 54** además tenían `message_reason_code` en NullType. Solo estaba "limpio" lo ya reprocesado manualmente con el handler corregido.
+
+**Solución aplicada (2026-06-10):** Generalización de `_cal_int_cols` → `_cal_dtype_map` en `lmbd-vi-store` (ver `decisions.md` → "Por qué lmbd-vi-store lee el CAL con _read_parquet_arrow..."). Ahora restaura tanto `int64+nulls→float64` como `string-100%-null→NullType` después de cada `pa.Table.from_pandas(merged)`. Desplegado por el usuario.
+
+**Reprocesamiento masivo (2026-06-10):** Se reprocesaron los 56 archivos de `EBGR/VISA/baseii_drafts/file_type=IN` (2026-01-01..2026-01-30) invocando `lmbd-vi-store` (output_type=BASEII) con el handler corregido — 56/56 SUCCESS. Re-escaneo con `scan_nulltype_columns.py` confirmó **0 columnas NullType** en los 56 archivos. Tras esto, `glue-test-1` para el rango 2026-01-01..2026-01-05 se relanzó (JobRunId `jr_b0e8b19c35c6128524a4bb5cd8f137096938c453fe60c9a003630bc22c5b732c`).
+
+**Si vuelve a aparecer (`SchemaColumnConvertNotSupportedException` leyendo cualquier directorio operational/staging con Spark):**
+1. Identificar la columna y el archivo reportados en el error.
+2. Correr `tst_files/scan_nulltype_columns.py` (ajustar `BUCKET`/`PREFIX`/cliente) para listar TODOS los archivos del directorio con columnas NullType — no asumir que es solo 1 columna/archivo, suele haber varias.
+3. Mapear cada `content_hash` afectado a `file_id` via `file_control` (scan DynamoDB) y reprocesar con `lmbd-vi-store` (output_type correspondiente).
+4. Verificar que el fix de `_cal_dtype_map` siga desplegado en el Lambda — si reaparece en archivos NUEVOS (no solo viejos), el fix se revirtió o no cubre la columna/caso nuevo.
+
+**Pendiente:** Verificar el mismo problema en otros clientes (`SBSA`, `BTRLRO`) y otros `output_type` (VSS_110/120/130/140) si los reportes correspondientes fallan con el mismo tipo de excepción.
+
+**Estado:** Resuelto para `EBGR/VISA/baseii_drafts/file_type=IN` (56/56 archivos). Pendiente confirmar resultado de `glue-test-1` (rango 2026-01-01..2026-01-05) tras el reprocesamiento.
+
+---
+
 ## glue-vi-interchange: fillna(0.0) en fee_min/fee_cap zeroeaba fees positivos — RESUELTO
 
 **Archivo:** `glue/scripts/visa/interchange/interchange.py` (función `process_pandas_partitions`)
@@ -227,6 +290,33 @@ Adicionalmente había un pre-filtro (antes de convertir a `DateType`) que compar
 
 ---
 
+## mc-interpreter: mensaje IPM con DE_55 corrupto desincronizaba el stream y abortaba el archivo completo — RESUELTO
+
+**Archivo:** `lambdas/mastercard/interpreter/src/handler.py` (función `read_len_prefixed_messages_variable`)
+**Detectado:** 2026-06-10
+
+**Síntoma:** Procesando `tst_files/T112T0.2026-01-06-13-11-32.001` (EBGR, encoding=cp500, need_unblock=TRUE), la lectura se detenía en el mensaje #26275 — el #26276 nunca se leía. En la versión previa del handler esto producía un `KeyError: 15` no controlado que tumbaba el generador completo, perdiendo TODOS los bloques ya procesados del archivo (porque `finalize_writers`/`fs.upload_tmp_outputs` solo corren si el generador termina sin excepción).
+
+**Causa raíz:** El mensaje #26275 tiene un `DE_55` (ICC/EMV, longitud variable con prefijo de 3 dígitos) cuyo prefijo declara `length=120`, pero el contenido real son **118 bytes** — anomalía puntual del archivo fuente (confirmado byte a byte con `tst_files/debug_mc_interpreter_de55.py`: el patrón `f0 f1 f6 ...` ("016...") del siguiente DE_63 aparece en offset 1088, 2 bytes antes de la posición esperada 1090 si DE_55 fuera realmente 120 bytes). Confiar en el largo declarado desplaza la lectura del DE_63 dos bytes, su prefijo queda `"6 M"` → `int("6 M")` lanza `ValueError`.
+
+El handler anterior tenía además **tres bugs que amplificaban esta única anomalía**:
+1. `parameters[i]["fixed"]` con indexado directo — un DE no definido en `Parameters().getdataelements()` (p.ej. DE_15, que aparece en el bitmap del mensaje #26276 ya desincronizado) lanzaba `KeyError` **sin try/except**, abortando el generador completo.
+2. `except Exception: de_len = 0` ante el `ValueError` de `int(raw_num.decode(encoding))` — no marcaba `parse_ok=False` ni hacía `break`, dejaba el stream permanentemente desincronizado y seguía produciendo filas basura.
+3. El short-read en campos de longitud fija hacía `break` sin marcar `parse_ok=False` (inconsistente con la rama de longitud variable).
+
+**Solución aplicada (2026-06-10):** Se portó el mecanismo de resync del sistema legacy (`tst_files/mcfiles.py` → `_resync_stream`), parametrizado por `encoding` (cp500/EBCDIC o latin-1/ASCII) en vez de hardcodear solo CP500 como el legacy:
+- Nuevas funciones `_valid_mti_byte_patterns(encoding)` y `_resync_stream(stream, encoding, scan_limit=50000)`: escanean hacia adelante buscando 4 bytes de `record_length` plausible (`20 <= rl <= 65535`) seguidos de un MTI válido (`_RESYNC_MTIS = ("1240","1442","1644","1740")` — alineado con `subdir_for_mti`, a diferencia del legacy que usaba `{1240,1644,1440,1740}`).
+- En el loop de parseo de DEs: `parameters.get(i)` (sin KeyError) y `parse_ok=False; break` en **cualquier** falla (DE no definido, `int()` inválido, short-read fijo o variable) — antes solo el short-read variable lo marcaba.
+- Si `parse_ok=False` tras el loop: se llama a `_resync_stream`. Si encuentra punto de resync, se descarta el mensaje (no se hace `yield`, no se incrementa `msg_no`) y se continúa el `while`. Si no lo encuentra, se hace `break` (a diferencia del `on_error=True` del legacy que descartaba todo el archivo) — esto preserva los bloques ya procesados via `finalize_writers`/`upload_tmp_outputs` en `interpretate_msg`.
+
+**Validación (2026-06-10):** `tst_files/debug_mc_interpreter_resync_test.py` — la lectura completa el archivo entero (422,734 mensajes, hasta el último byte del stream, MTI 1644 final), con `parse_ok=True` en el 100% de las filas yieldeadas. Se descartaron 2 mensajes corruptos consecutivos (offsets 18970881 y 18974467, ambos con `record_length` plausible y MTI 1240 detectado tras el resync), confirmando que la corrupción del archivo no era un caso aislado de 1 mensaje sino una zona con 2 mensajes afectados. Antes del fix, la lectura crasheaba (`KeyError: 15`) alrededor del mensaje #26276 y se perdía el archivo completo.
+
+**Si vuelve a aparecer (lectura de un archivo MC se detiene antes del final, o `KeyError`/`ValueError` no controlado en `read_len_prefixed_messages_variable`):** Revisar el log `WARNING ... Mensaje corrupto descartado ... RESYNC exitoso/fallido`. Si el resync falla repetidamente cerca del mismo offset, sospechar de corrupción real del archivo fuente (no un bug del parser) — comparar con `debug_mc_interpreter_de55.py`/`de54.py` el rango de bytes alrededor del offset reportado.
+
+**Estado:** Resuelto en código local (2026-06-10). Pendiente subir el handler actualizado al Lambda `lmbd-mc-interpreter` y validar end-to-end con `itx-mastercard-orchestrator`.
+
+---
+
 ## mc-transform: timeout con múltiples MTIs (riesgo alto)
 
 **Archivo:** `lambdas/mastercard/transform/src/handler.py`
@@ -444,3 +534,28 @@ account_ref_number_date  !YDDD        2026-01-05    12607    12607  OK
 - `conversion_date` un año adelante → verificar `date_format=!YDDD_MAX` en DynamoDB y que el código aplique `future_mask`
 
 **Estado:** Resuelto — `handler.py` subido al Lambda `lmbd-vi-clean` por el usuario (2026-06-08). Script de validación: `tst_files/debug_clean_dates.py`.
+
+---
+
+## Athena HIVE_BAD_DATA: columnas ARDEF (ardef_country, etc.) BINARY en Parquet vs integer en partición — RESUELTO
+
+**Tabla:** `itl_0004_itx_dev_02_glue_database_operational_ebgr_visa.baseii_drafts`, partición `file_type=IN/date=2026-01-15`
+**Detectado:** 2026-06-10
+
+**Síntoma:** Athena lanzaba `HIVE_BAD_DATA: Malformed Parquet file. Field ardef_country's type BINARY in parquet file ... is incompatible with type integer defined in table schema [...]` al consultar `baseii_drafts`.
+
+**Causa raíz:** Antes del fix de ARDEF (2026-06-06, ver gotcha "load_visa_ardef() vaciaba el ARDEF..."), los 10 campos derivados del cruce ARDEF (`ardef_country`, `product_id`, `b2b_program_id`, `fast_funds`, `nnss_indicator`, `product_subtype`, `technology_indicator`, `travel_indicator`, `funding_source`, `issuer_country`) salían 100% null en `calculate.parquet`. Con una columna 100% null, el crawler de Glue no puede inferir el tipo real desde los datos y los tipó como `int`. Ese tipo quedó grabado en la **metadata de la partición** `date=2026-01-15` (cada partición guarda su propia copia del schema al momento del crawl).
+
+Tras el fix de ARDEF, el archivo de esa partición se regeneró con valores reales (`'US'`, `'GR'`, etc. — alfa-2, ver `tst_files/ardef.parquet` columna `ardef_country` dtype=object/string). El Parquet físico ahora tiene esas columnas como `BINARY` (string), pero la partición en el catálogo seguía con `int` porque no se había vuelto a crawlear desde el fix → choque schema-partición vs Parquet real.
+
+El schema a **nivel de tabla** (`baseii_drafts`) ya estaba en `string` (otras particiones sí se habían re-crawleado después del fix) — solo esta partición específica quedó "congelada".
+
+**Solución aplicada (2026-06-10):** Re-correr el crawler `itl_0004_itx_dev_02_glue_crawler_operational_ebgr_visa` (tiene `SchemaChangePolicy.UpdateBehavior=UPDATE_IN_DATABASE`). Verificado con `aws glue get-partition` antes/después: los 10 campos pasaron de `int` → `string` en la partición `date=2026-01-15`, coincidiendo con el Parquet y con el schema de tabla.
+
+**Si vuelve a aparecer (`HIVE_BAD_DATA ... type BINARY ... incompatible with type integer/double/etc.` en cualquier tabla operational/staging):**
+1. Identificar la partición exacta del error (`file_type=X/date=YYYY-MM-DD`) y la columna afectada.
+2. `aws glue get-partition --database-name <db> --table-name <tabla> --partition-values "<file_type>" "<date>" --query "Partition.StorageDescriptor.Columns[?Name=='<col>']"` — comparar contra `aws glue get-table ... --query "Table.StorageDescriptor.Columns"` (schema de tabla).
+3. Si difieren, re-correr el crawler correspondiente (`operational_ebgr_visa`, `staging_ebgr_visa`, etc. — todos tienen `UPDATE_IN_DATABASE`) y volver a comparar.
+4. Causa típica: una columna que en algún momento fue 100% null (por un bug ya corregido) y el crawler le asignó un tipo "por defecto" que no coincide con el tipo real una vez que la columna empieza a tener datos.
+
+**Estado:** Resuelto. Verificado también `staging_ebgr_visa` (2026-06-10) tras re-crawl: `400_baseii_cal_drafts` (tabla + las 3 particiones de `date=2026-01-15`, incluyendo el mismo file_id `57E3114D54623997062C63DA9CAD6BA7.parquet` del error original) ya estaba en `string` — sin mismatch. `500_baseii_itx_drafts` no contiene estas 10 columnas (el output de interchange no las propaga; vuelven a aparecer recién en `operational/baseii_drafts` vía el merge CAL+CLN+ITX de `lmbd-vi-store`). No se encontraron otros casos afectados.

@@ -83,6 +83,7 @@ Athena (*)                                        Consultas SQL sobre datos fina
 | `itl-0004-itx-dev-intchg-02-glue-vi-interchange` | Visa | G.2X × 4 |
 | `itl-0004-itx-dev-intchg-02-glue-mc-calculate` | MC | G.1X × 2 |
 | `itl-0004-itx-dev-intchg-02-glue-mc-interchange` | MC | G.1X × 2 |
+| `itl-0004-itx-dev-intchg-02-glue-test-1` (reporting, pendiente renombrar) | Visa/MC | G.1X × 2 |
 
 ### Step Functions
 

@@ -182,10 +182,28 @@ Decisiones no obvias tomadas durante el desarrollo. Cada entrada explica el **qu
 
 ## Por qué lmbd-vi-store lee el CAL con _read_parquet_arrow en vez de _read_parquet_from_s3
 
-**Decisión:** En `store_output` (`lambdas/visa/store/src/handler.py`), el Parquet CAL se lee con `_read_parquet_arrow()` (devuelve `pa.Table`) y se extrae el schema de columnas enteras antes de convertir a pandas.
+**Decisión:** En `store_output` (`lambdas/visa/store/src/handler.py`), el Parquet CAL se lee con `_read_parquet_arrow()` (devuelve `pa.Table`) y se extrae el schema de columnas antes de convertir a pandas, para poder restaurar tipos degradados por el round-trip pandas/pyarrow.
 
-**Razón:** `pq.read_table(...).to_pandas()` convierte INT64+nulls → float64 (numpy no tiene int nullable). Si el CAL tiene columnas enteras con nulls (como `timeliness`), al reconstruir la Arrow Table con `pa.Table.from_pandas(merged)`, PyArrow infiere `double`. El crawler de Glue luego detecta esas columnas como `double` en la capa operational en lugar de `bigint`.
+**Razón:** El round-trip por pandas degrada dos tipos de columnas del CAL:
+- `INT64+nulls → float64` (numpy no tiene int nullable). Si el CAL tiene columnas enteras con nulls (como `timeliness`), al reconstruir la Arrow Table con `pa.Table.from_pandas(merged)`, PyArrow infiere `double`. El crawler de Glue luego detecta esas columnas como `double` en la capa operational en lugar de `bigint`.
+- `string 100% null → NullType`. Si una columna del CAL es 100% null en un archivo concreto (p.ej. `message_reason_code`, `type_of_purchase` para ciertos `file_id`), pandas la representa como `object` con puros `None`, y `pa.Table.from_pandas()` no puede inferir el tipo real → le asigna `pa.null()` (NullType, se escribe como `INT32` en Parquet). Ver gotcha "lmbd-vi-store: columnas NullType en operational rompen lectura de directorio completo con Spark" para el impacto downstream.
 
-**Solución:** Leer CAL como Arrow Table, capturar `_cal_int_cols = {nombre: tipo Arrow}`, convertir a pandas normalmente, y después de cada `pa.Table.from_pandas(merged)` restaurar los tipos enteros con `merged_table.set_column(..., col.cast(atype))`. Arrow castea `float64 null → int64 null` sin pérdida de datos.
+**Solución (generalizada 2026-06-10):** Leer CAL como Arrow Table, capturar `_cal_dtype_map = {nombre: tipo Arrow}` para TODAS las columnas, convertir a pandas normalmente, y después de cada `pa.Table.from_pandas(merged)` restaurar el tipo original con `merged_table.set_column(..., col.cast(atype))` cuando el tipo actual sea `NullType` o cuando sea `float64` y el original era entero. Arrow castea tanto `NullType → string/lo-que-sea` como `float64 null → int64 null` sin pérdida de datos.
 
 **Alternativa descartada:** `table.to_pandas(use_nullable_dtypes=True)` — más limpio, pero requiere PyArrow ≥ 2.0 y el layer usa una versión anterior.
+
+---
+
+## Por qué glue-vi-mc-reporting (glue-test-1) lee `exchange_rate/rate_date=YYYY-MM-DD/` y no `exchange-rates/brand={brand}/exchange_date=YYYY-MM-DD/`
+
+**Decisión:** `load_exchange_rates()` en `glue/scripts/reports/get_transaction/get_transaction.py` lee `s3://itl-0004-itx-dev-intchg-02-s3-reference/exchange_rate/rate_date=YYYY-MM-DD/`, filtra por columna `brand` (`'VISA'` / `'MasterCard'`, comparación case-insensitive) y renombra columnas a `exchange_date, from_currency, to_currency, fx_rate`.
+
+**Razón:** Existen dos ubicaciones de tipo de cambio en `s3-reference`:
+- `exchange-rates/brand={Visa,MasterCard}/exchange_date=YYYY-MM-DD/` — cobertura incompleta (no tiene todos los pares de moneda/fechas necesarios, ej. Visa EUR→USD para algunas fechas) y además sus columnas reales (`currency_from, currency_to, currency_from_code, currency_to_code, exchange_value`) no coinciden con las que el código asumía (`from_currency, to_currency, fx_rate`).
+- `exchange_rate/rate_date=YYYY-MM-DD/` — cubre 2025-12-01..2026-04-30, ambas marcas en una sola tabla distinguidas por la columna `brand`. Es la fuente que ya usan otros procesos (interchange) y que sí tiene los pares de moneda necesarios.
+
+El bug original (`Column 'to_currency' does not exist`) solo se manifestó el 2026-06-10 porque hasta entonces el job fallaba ANTES (por el `SchemaColumnConvertNotSupportedException` de columnas NullType en `lmbd-vi-store`, ya resuelto) — nunca había llegado a ejecutar `_join_exchange_rates()`.
+
+**Pendiente:** hay un nuevo método de extracción de tipo de cambio Visa en desarrollo (mencionado por el usuario 2026-06-10). Cuando esté disponible, revisar si `load_exchange_rates()` debe apuntar a esa nueva fuente en vez de (o además de) `exchange_rate/`.
+
+**Alternativa descartada:** mantener `exchange-rates/brand={brand}/` y solo corregir los nombres de columna — descartado porque esa tabla no tiene cobertura completa de pares de moneda/fechas (`exchange-rates/brand=Visa/` no tenía EUR→USD para `exchange_date=2026-01-01`, mientras que `exchange_rate/rate_date=2026-01-05/` sí).

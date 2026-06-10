@@ -13,7 +13,7 @@ from __future__ import annotations
 #   6. Writers Parquet   – write_parquet_by_mti_block_streaming, finalize
 #   7. Orquestador       – interpretate_msg
 # ──────────────────────────────────────────────────────────────────────────────
-
+ 
 import gc
 import io
 import json
@@ -40,17 +40,17 @@ from botocore.exceptions import ClientError
 # ══════════════════════════════════════════════════════════════════════════════
 # LOGGER
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 # En Lambda todo lo enviado a stdout/stderr se captura en CloudWatch Logs.
-
+ 
 class Logger:
     """
     Provides a standardized logger object to print and store log messages.
-
+ 
     En Lambda: solo StreamHandler -> stdout -> CloudWatch Logs automáticamente.
     En local: StreamHandler -> FileHandler -> consola -> archivo de log en disco.
     """
-
+ 
     _LOG_LEVELS = OrderedDict(
         {
             "debug": logging.DEBUG,
@@ -60,68 +60,68 @@ class Logger:
             "critical": logging.CRITICAL,
         }
     )
-
+ 
     _DEFAULT_FMT = (
         "%(asctime)s :: PID %(process)d :: TID %(thread)d :: "
         "%(module)s.%(funcName)s :: Line %(lineno)d :: "
         "%(levelname)s :: %(message)s"
     )
-
+ 
     def __init__(self, name: str) -> None:
-
+ 
         self.logger = logging.getLogger(name)
-
+ 
         if self.logger.handlers:
             return
-
+ 
         log_level = os.environ.get("ITX_LOG_LEVEL", "info").strip().lower()
         self.logger.setLevel(self._LOG_LEVELS.get(log_level, logging.INFO))
-
+ 
         formatter = logging.Formatter(self._DEFAULT_FMT)
-
+ 
         # StreamHandler siempre activo
         # En Lambda, stdout es capturado automáticamente por CloudWatch.
         # En local, imprime en consola.
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
-
-
+ 
+ 
 log = Logger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE / DYNAMODB
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 class Database:
     """
     Acceso DynamoDB para las tablas necesarias del interpreter Mastercard.
-
+ 
     Tablas usadas:
       - file_control
       - file_name_regex_param
       - client
-
+ 
     Nota:
     Se conserva la interfaz read_records(...) del mc_interpreter original para
     minimizar cambios sobre la lógica de negocio ya validada.
     """
-
+ 
     DEFAULT_FILE_CONTROL_TABLE = "itl-0004-itx-dev-dynamo-file_control-02"
     DEFAULT_FILE_PATTERN_TABLE = "itl-0004-itx-dev-dynamo-file_pattern-02"
     DEFAULT_CLIENT_TABLE = "itl-0004-itx-dev-dynamo-client-02"
-
+ 
     def __init__(self) -> None:
         self.region = os.environ.get("AWS_REGION", "eu-south-2")
         self._dynamodb = None
         self._cache: dict[tuple[str, tuple[tuple[str, str], ...]], pd.DataFrame] = {}
-
+ 
     def _get_resource(self):
         if self._dynamodb is None:
             self._dynamodb = boto3.resource("dynamodb", region_name=self.region)
         return self._dynamodb
-
+ 
     def _resolve_table_name(self, table_name: str) -> str:
         normalized = table_name.strip().lower()
         mapping = {
@@ -143,10 +143,10 @@ class Database:
             ),
         }
         return mapping.get(normalized, table_name)
-
+ 
     def _get_table(self, logical_table_name: str):
         return self._get_resource().Table(self._resolve_table_name(logical_table_name))
-
+ 
     @staticmethod
     def _to_str(value: Any) -> str:
         if value is None:
@@ -154,7 +154,7 @@ class Database:
         if isinstance(value, Decimal):
             return str(value)
         return str(value)
-
+ 
     @staticmethod
     def _match_where(item: dict[str, Any], where: dict[str, str | int | float]) -> bool:
         for key, expected in where.items():
@@ -164,12 +164,12 @@ class Database:
             if str(actual).strip().upper() != str(expected).strip().upper():
                 return False
         return True
-
+ 
     def _scan_all(self, logical_table_name: str) -> list[dict[str, Any]]:
         table = self._get_table(logical_table_name)
         items: list[dict[str, Any]] = []
         scan_kwargs: dict[str, Any] = {}
-
+ 
         while True:
             response = table.scan(**scan_kwargs)
             items.extend(response.get("Items", []))
@@ -177,9 +177,9 @@ class Database:
             if not last_key:
                 break
             scan_kwargs["ExclusiveStartKey"] = last_key
-
+ 
         return items
-
+ 
     def _try_get_item(self, logical_table_name: str, where: dict[str, str | int | float]) -> dict[str, Any] | None:
         """
         Intenta get_item para tablas con keys conocidas. Si no aplica o falla por
@@ -187,7 +187,7 @@ class Database:
         """
         table = self._get_table(logical_table_name)
         normalized = logical_table_name.strip().lower()
-
+ 
         candidate_keys: list[dict[str, str | int | float]] = []
         if normalized == "file_control" and "file_id" in where:
             candidate_keys.append({"file_id": where["file_id"]})
@@ -195,7 +195,7 @@ class Database:
                 candidate_keys.append({"client_id": where["client_id"], "file_id": where["file_id"]})
         elif normalized == "client" and "client_id" in where:
             candidate_keys.append({"client_id": where["client_id"]})
-
+ 
         for key in candidate_keys:
             try:
                 response = table.get_item(Key=key)
@@ -206,13 +206,13 @@ class Database:
                 if code == "ValidationException":
                     continue
                 raise
-
+ 
             item = response.get("Item")
             if item and self._match_where(item, where):
                 return item
-
+ 
         return None
-
+ 
     def _to_bool(self, val: object) -> bool:
         if val is None:
             return False
@@ -232,7 +232,7 @@ class Database:
         """
         if where is None:
             where = {}
-
+ 
         # cache_key includes fields so that two calls to the same table+where
         # but requesting different columns don't share the same cache entry
         # (which would cause reindex to return NaN for missing columns).
@@ -243,13 +243,13 @@ class Database:
         )
         if cache_key in self._cache:
             return self._cache[cache_key].copy()
-
+ 
         log.logger.debug(
             f"DynamoDB read_records | table={table_name} | fields={fields} | where={where}"
         )
-
+ 
         items: list[dict[str, Any]] = []
-
+ 
         if where:
             item = self._try_get_item(table_name, where)
             if item is not None:
@@ -259,7 +259,7 @@ class Database:
                 items = [it for it in scanned if self._match_where(it, where)]
         else:
             items = self._scan_all(table_name)
-
+ 
         rows = [
             {field: self._to_str(item.get(field, "")) for field in fields}
             for item in items
@@ -267,14 +267,14 @@ class Database:
         df = pd.DataFrame(rows, columns=fields, dtype=str)
         self._cache[cache_key] = df.copy()
         return df
-
+ 
     def read_sql(self, sql: str, params: tuple = ()) -> pd.DataFrame:
         """
         Compatibilidad mínima para las consultas usadas por obtain_encoding(...).
         No es un motor SQL; traduce las dos consultas existentes a read_records.
         """
         sql_lower = " ".join(sql.lower().split())
-
+ 
         if "from file_control" in sql_lower and "file_type" in sql_lower:
             client_id, file_id = params
             return self.read_records(
@@ -282,7 +282,7 @@ class Database:
                 fields=["file_type"],
                 where={"client_id": client_id, "file_id": file_id},
             )
-
+ 
         if "from client" in sql_lower:
             client_id = params[0]
             if "file_mc_encoding_in" in sql_lower:
@@ -296,7 +296,7 @@ class Database:
                 fields=[col],
                 where={"client_id": client_id},
             )
-
+ 
         raise ValueError(f"Consulta read_sql no soportada en Lambda handler: {sql}")
 
     def needs_unblock_for_file(self, client_id: str, file_id: str) -> bool:
@@ -305,11 +305,11 @@ class Database:
             fields=["file_type", "brand_id", "landing_file_name"],
             where={"client_id": client_id, "file_id": file_id},
         )
-
+ 
         if df_cf.empty:
             log.logger.info(f"[needs_unblock] df_cf vacío para client_id={client_id}, file_id={file_id}")
             return False
-
+ 
         file_type = str(df_cf.iloc[0]["file_type"] or "").strip().upper()
         raw_brand_id = str(df_cf.iloc[0]["brand_id"] or "").strip().upper()
         landing_file_name = str(df_cf.iloc[0]["landing_file_name"] or "").strip()
@@ -324,29 +324,29 @@ class Database:
                 f"brand_id desconocido en file_control: "
                 f"client_id={client_id}, file_id={file_id}, brand_id={raw_brand_id}"
             )
-
+ 
         log.logger.info(
             f"[needs_unblock] file_type={file_type!r} | brand_id={brand_id!r} | "
             f"landing_file_name={landing_file_name!r}"
         )
-
+ 
         df_rx = self.read_records(
             table_name="file_name_regex_param",
             fields=["file_format", "file_block"],
             where={"customer_code": client_id, "brand": brand_id, }, # REMOVED: "file_type": file_type
         )
-
+ 
         log.logger.info(
             f"[needs_unblock] df_rx rows={len(df_rx)} | "
             f"query where: customer_code={client_id!r}, brand={brand_id!r}, file_type={file_type!r}"
         )
-
+ 
         if not df_rx.empty:
             log.logger.info(f"[needs_unblock] df_rx sample:\n{df_rx.to_string()}")
-
+ 
         if df_rx.empty:
             return False
-
+ 
         for _, row in df_rx.iterrows():
             pattern = str(row["file_format"]).strip()
             matched = False
@@ -358,16 +358,16 @@ class Database:
                 log.logger.warning(f"Regex inválida en file_name_regex_param: {pattern}")
                 log.logger.warning(f"[needs_unblock] Regex inválida: {pattern}")
                 continue
-
+ 
             log.logger.info(
                 f"[needs_unblock] pattern={pattern!r} | "
                 f"landing={landing_file_name!r} | matched={matched} | "
                 f"file_block raw={row['file_block']!r}"
             )
-
+ 
             if matched:
                 return self._to_bool(row["file_block"])
-
+ 
         return False
 
     def needs_interpreter_fix(self, client_id: str, file_id: str) -> bool:
@@ -444,50 +444,50 @@ class Database:
 # ══════════════════════════════════════════════════════════════════════════════
 # FILE STORAGE / S3
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 class _Layer(StrEnum):
     """Enum de capas de almacenamiento."""
     LANDING = auto()
     STAGING = auto()
     OPERATIONAL = auto()
-
-
+ 
+ 
 class FileStorage:
     """
     Capa de I/O sobre S3 para Lambda.
-
+ 
     LANDING:
         s3://{ITX_S3_BUCKET_LANDING}/{client_id}/{landing_file_name}
-
+ 
     STAGING (nueva estructura con particionado Hive-style):
         s3://{ITX_S3_BUCKET_STAGING}/{client_id}/{brand_id}/{subdir}/file_type={file_type}/date={file_processing_date}/{filename}
-
+ 
         Ejemplo:
         s3://.../EURBGR/MC/100_IPM_1240_RAW/file_type=IN/date=20240101/abc123_IDN001_1240.parquet
  
     /tmp local (misma jerarquía, relativa a ITX_TMP_ROOT):
         {tmp_root}/{client_id}/{brand_id}/{subdir}/file_type={file_type}/date={file_processing_date}/{filename}
-
+ 
     Para mantener la lógica original con pyarrow.ParquetWriter, los parquets se
     escriben primero en /tmp y luego se suben a S3 al finalizar el interpreter.
     """
-
+ 
     Layer = _Layer
-
+ 
     DEFAULT_BUCKET_LANDING = "itl-0004-itx-dev-intchg-02-s3-landing"
     DEFAULT_BUCKET_STAGING = "itl-0004-itx-dev-intchg-02-s3-staging"
-
+ 
     def __init__(self) -> None:
         self.region = os.environ.get("AWS_REGION", "eu-south-2")
         self.tmp_root = Path(os.environ.get("ITX_TMP_ROOT", "/tmp/mc_interpreter"))
         self._s3 = None
         self._details_cache: dict[tuple[str, str], dict[str, Any]] = {}
-
+ 
     def _get_client(self):
         if self._s3 is None:
             self._s3 = boto3.client("s3", region_name=self.region)
         return self._s3
-
+ 
     def _get_bucket(self, layer: _Layer) -> str:
         mapping = {
             self.Layer.LANDING: (
@@ -508,7 +508,7 @@ class FileStorage:
         if not bucket:
             raise ValueError(f"No hay bucket configurado para layer={layer}")
         return bucket
-
+ 
     def get_file_control_details(
         self,
         client_id: str,
@@ -524,7 +524,7 @@ class FileStorage:
                 "landing_file_name",
                 "file_id",
             ]
-
+ 
         cache_key = (client_id.strip().upper(), file_id.strip().upper())
         if cache_key not in self._details_cache:
             db = Database()
@@ -538,10 +538,10 @@ class FileStorage:
                     f"No existe file_control para client_id={client_id}, file_id={file_id}"
                 )
             self._details_cache[cache_key] = df.iloc[0].to_dict()
-
+ 
         details = self._details_cache[cache_key]
         return {field: details.get(field, "") for field in fields}
-
+ 
     def _get_s3_key_prefix(
         self,
         layer: _Layer,
@@ -564,7 +564,7 @@ class FileStorage:
         parts.append(f"file_type={details['file_type']}")
         parts.append(f"date={details['file_processing_date']}")
         return "/".join(parts) + "/"
-
+ 
     def _get_s3_key(
         self,
         layer: _Layer,
@@ -579,13 +579,13 @@ class FileStorage:
             return prefix + str(details["landing_file_name"])
  
         return prefix + file_id
-
+ 
     def _get_local_root(self, client_id: str, file_id: str) -> Path:
         details = self.get_file_control_details(client_id=client_id, file_id=file_id)
         # Raiz base: solo client/brand
         # Los segmentos subdir, file_type= y date= se añaden en _get_file_path/_get_folder_path.
         return self.tmp_root / str(details["client_id"] or client_id) / str(details["brand_id"])
-
+ 
     def _get_file_path(
         self, layer: _Layer, client_id: str, file_id: str, subdir: str = ""
     ) -> str:
@@ -605,7 +605,7 @@ class FileStorage:
         if subdir:
             base = base / subdir.strip("/")
         return str(base / f"file_type={file_type}" / f"date={date}" / file_id)
-
+ 
     def _get_folder_path(
         self, layer: _Layer, client_id: str, file_id: str, subdir: str = ""
     ) -> str:
@@ -619,12 +619,12 @@ class FileStorage:
         if subdir:
             base = base / subdir.strip("/")
         return str(base / f"file_type={file_type}" / f"date={date}")
-
+ 
     def cleanup_tmp_outputs(self, client_id: str, file_id: str) -> None:
         local_root = self._get_local_root(client_id=client_id, file_id=file_id)
         if local_root.exists():
             shutil.rmtree(local_root)
-
+ 
     def read_binary(
         self,
         layer: _Layer,
@@ -646,7 +646,7 @@ class FileStorage:
                 f"Error S3 get_object [{exc.response['Error']['Code']}] | s3://{bucket}/{key}"
             )
             raise
-
+ 
     def read_parquet(
         self, layer: _Layer, client_id: str, file_id: str, subdir: str = ""
     ) -> pd.DataFrame:
@@ -655,7 +655,7 @@ class FileStorage:
         log.logger.info(f"Leyendo parquet desde S3: s3://{bucket}/{key}")
         response = self._get_client().get_object(Bucket=bucket, Key=key)
         return pd.read_parquet(io.BytesIO(response["Body"].read()))
-
+ 
     def write_parquet(
         self,
         data: pd.DataFrame,
@@ -677,7 +677,7 @@ class FileStorage:
             ContentType="application/octet-stream",
         )
         return f"s3://{bucket}/{key}"
-
+ 
     def upload_tmp_outputs(
         self,
         layer: _Layer,
@@ -735,7 +735,7 @@ class FileStorage:
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. ISO-8583 / PARSING HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 def decode_digits(b: bytes, enc: str) -> str:
     """
     Convierte bytes que representan dígitos (ASCII o EBCDIC) a string.
@@ -752,8 +752,8 @@ def decode_digits(b: bytes, enc: str) -> str:
                 out.append("?")
         return "".join(out)
     return b.decode("latin1", errors="ignore")
-
-
+ 
+ 
 def bitmap_bits(bitmap: bytes) -> list[int]:
     """
     Devuelve la lista de campos presentes según el bitmap.
@@ -795,8 +795,8 @@ def split_mti_bitmap_body(payload: bytes):
  
     fields = bitmap_bits(bitmap)
     return mti_bytes, bitmap, body, fields, has_secondary
-
-
+ 
+ 
 def detect_mti(payload: bytes, encoding: str):
     """
     Intenta detectar si un mensaje empieza con un MTI válido (ISO-8583).
@@ -995,8 +995,8 @@ def obtain_encoding(db: Database, client_id: str, file_id: str) -> str | None:
         return "cp500"
     else:
         return None
-
-
+ 
+ 
 DEFAULT_NUMERIC_DES: frozenset[int] = frozenset({
     2, 3, 4, 5, 6, 9, 10, 12, 14, 23, 24, 25, 26, 30, 37, 38, 49, 50, 51, 71, 73, 93, 94, 95, 100
 })
@@ -1051,8 +1051,8 @@ def parse_des_one_pass(
  
         out[de] = raw
     return out
-
-
+ 
+ 
 def decode_text_best(raw: bytes, enc: str) -> str:
     """Si el MTI fue EBCDIC_DIGITS, usa cp500; si no, ascii/latin1."""
     if enc == "EBCDIC_DIGITS":
@@ -1061,8 +1061,8 @@ def decode_text_best(raw: bytes, enc: str) -> str:
         return raw.decode("ascii", errors="replace")
     except UnicodeDecodeError:
         return raw.decode("latin1", errors="replace")
-
-
+ 
+ 
 def format_de_value(
     de: int,
     raw: Optional[bytes],
@@ -1211,8 +1211,8 @@ def extract_de24_fast(
         return None
  
     return decode_digits(raw24, enc).strip()
-
-
+ 
+ 
 def extract_pds_value_48_105(pds_blob: str | None, target_tag: str = "0105") -> str | None:
     if pds_blob is None or pd.isna(pds_blob):
         return None
@@ -1240,8 +1240,8 @@ def extract_pds_value_48_105(pds_blob: str | None, target_tag: str = "0105") -> 
         i = end
  
     return None
-
-
+ 
+ 
 def add_headers_fields_697(df: pd.DataFrame) -> None:
     """
     Para trailers (function_code == '695'):
@@ -1256,8 +1256,8 @@ def add_headers_fields_697(df: pd.DataFrame) -> None:
     s = df.loc[mask, "de_48"].astype("string")
     df.loc[mask, "file_idn"] = s.map(lambda x: extract_pds_value_48_105(x, "0105"))
     df.loc[mask, "file_dt"]  = df.loc[mask, "file_idn"].astype("string").str.slice(3, 9)
-
-
+ 
+ 
 def apply_block_file_context_697(
     df: pd.DataFrame,
     *,
@@ -1425,8 +1425,8 @@ def unblock_1014(
             stream_file.seek(stream_file.tell() - len(sep))
  
     return bytes(out_bytes)
-
-
+ 
+ 
 def read_len_prefixed_messages(
     stream,
     *,
@@ -1492,8 +1492,8 @@ def read_len_prefixed_messages(
                 row["body"]   = body
         yield row
         pos = pos + 4 + msg_len
-
-
+ 
+ 
 def _bitmap_to_fields_1_128(bitmap_16: bytes) -> List[int]:
     fields = []
     de_no  = 1
@@ -1503,6 +1503,64 @@ def _bitmap_to_fields_1_128(bitmap_16: bytes) -> List[int]:
                 fields.append(de_no)
             de_no += 1
     return fields
+
+
+# MTIs validos que este pipeline procesa (ver subdir_for_mti). Usados por
+# _resync_stream para reconocer el inicio del siguiente mensaje cuando el
+# mensaje actual queda corrupto/desincronizado.
+_RESYNC_MTIS = ("1240", "1442", "1644", "1740")
+
+
+def _valid_mti_byte_patterns(encoding: str) -> set[bytes]:
+    """
+    Devuelve el set de secuencias de 4 bytes que representan un MTI valido
+    de _RESYNC_MTIS, codificadas segun `encoding` (cp500/EBCDIC o latin-1/ASCII).
+    No usa detect_mti() para evitar excepciones de decode sobre bytes arbitrarios
+    durante el escaneo de resync.
+    """
+    if encoding.upper() in ("CP500", "EBCDIC", "EBCDIC_DIGITS"):
+        return {bytes(0xF0 + int(d) for d in mti) for mti in _RESYNC_MTIS}
+    return {mti.encode("ascii") for mti in _RESYNC_MTIS}
+
+
+def _resync_stream(stream: BinaryIO, encoding: str, scan_limit: int = 50000):
+    """
+    Escanea hacia adelante desde la posicion actual del stream buscando el
+    inicio del siguiente mensaje valido: 4 bytes de record_length en rango
+    plausible (20-65535) seguidos de un MTI reconocido (_RESYNC_MTIS).
+
+    Mismo mecanismo que el sistema legacy (tst_files/mcfiles.py -> _resync_stream),
+    usado para descartar un mensaje corrupto y continuar leyendo el resto del
+    archivo, en vez de abortar la interpretacion completa.
+
+    Retorna (True, nueva_posicion) si encuentra un punto de resync dentro de
+    scan_limit bytes, o (False, None) si no lo encuentra (deja el stream en
+    su posicion original).
+    """
+    start = stream.tell()
+    end = stream.getbuffer().nbytes
+    valid_mtis = _valid_mti_byte_patterns(encoding)
+
+    for offset in range(scan_limit):
+        scan_pos = start + offset
+        if scan_pos + 8 > end:
+            break
+        stream.seek(scan_pos)
+        rl_bytes = stream.read(4)
+        if len(rl_bytes) < 4:
+            break
+        try:
+            potential_rl = struct.unpack(">i", rl_bytes)[0]
+        except Exception:
+            continue
+        if not (20 <= potential_rl <= 65535):
+            continue
+        if stream.read(4) in valid_mtis:
+            stream.seek(scan_pos)
+            return True, scan_pos
+
+    stream.seek(start)
+    return False, None
 
 
 def read_len_prefixed_messages_variable(
@@ -1519,13 +1577,18 @@ def read_len_prefixed_messages_variable(
       - Lee 4 bytes length (solo control)
       - Lee 20 bytes (MTI 4 + bitmap 16)
       - Lee DEs según bitmap y parameters (fixed/variable) con encoding cp500
- 
+
+    Si la lectura de un mensaje queda corrupta/desincronizada (DE no definido
+    en `parameters`, longitud variable no numerica, o short read), el mensaje
+    se descarta y se intenta un resync hacia el siguiente mensaje valido
+    (ver _resync_stream). Si el resync falla, se detiene la lectura.
+
     Retorna rows con bitmap/body (bytes o hex).
     """
     parameters = Parameters().getdataelements()
     msg_no     = 0
     base0      = stream.tell()
- 
+
     while True:
         msg_start = stream.tell()
         raw_len   = stream.read(4)
@@ -1537,44 +1600,71 @@ def read_len_prefixed_messages_variable(
             record_length = 0
         if record_length == 0:
             break
- 
+
         message_total = stream.read(20)
         if len(message_total) != 20:
             break
- 
+
         mti_bytes, bitmap_16 = struct.unpack("4s16s", message_total)
         mti, enc             = detect_mti(payload=mti_bytes, encoding=encoding)
         fields_present       = _bitmap_to_fields_1_128(bitmap_16)
         body_bytes           = bytearray()
         parse_ok             = True
- 
+
+        log.logger.info(f"mti_bytes: {mti_bytes} | bitmap_16: {bitmap_16} | mti: {mti} | enc: {enc}")
+        log.logger.info(f"field_present: {fields_present} | body_bytes: {body_bytes} | parse_ok: {parse_ok}")
+
         for i in range(2, 129):
             if i not in fields_present:
                 continue
-            if parameters[i]["fixed"]:
-                de_len = parameters[i]["length"]
-                v = stream.read(de_len)
-                if len(v) < de_len:
-                    break
-                body_bytes.extend(v)
-            else:
-                len_digits = parameters[i]["length"]
-                raw_num    = stream.read(len_digits)
-                if len(raw_num) < len_digits:
-                    break
-                try:
-                    de_len = int(raw_num.decode(encoding))
-                except Exception:
-                    de_len = 0
- 
+            de_spec = parameters.get(i)
+            if de_spec is None:
+                parse_ok = False
+                break
+            if de_spec["fixed"]:
+                de_len = de_spec["length"]
                 v = stream.read(de_len)
                 if len(v) < de_len:
                     parse_ok = False
                     break
- 
+                body_bytes.extend(v)
+            else:
+                len_digits = de_spec["length"]
+                raw_num    = stream.read(len_digits)
+                if len(raw_num) < len_digits:
+                    parse_ok = False
+                    break
+                try:
+                    de_len = int(raw_num.decode(encoding))
+                except Exception:
+                    parse_ok = False
+                    break
+
+                v = stream.read(de_len)
+                if len(v) < de_len:
+                    parse_ok = False
+                    break
+
                 body_bytes.extend(raw_num)
                 body_bytes.extend(v)
- 
+
+        if not parse_ok:
+            resynced, new_pos = _resync_stream(stream, encoding=encoding)
+            if resynced:
+                log.logger.warning(
+                    f"[mc-interpreter] Mensaje corrupto descartado en offset "
+                    f"{msg_start - base0} (mti={mti!r}, record_length={record_length}) "
+                    f"-- RESYNC exitoso en offset {new_pos - base0}, continuando."
+                )
+                continue
+            else:
+                log.logger.warning(
+                    f"[mc-interpreter] Mensaje corrupto en offset {msg_start - base0} "
+                    f"(mti={mti!r}, record_length={record_length}) -- RESYNC fallido, "
+                    f"deteniendo lectura. Mensajes leidos hasta ahora: {msg_no}."
+                )
+                break
+
         msg_no += 1
         has_secondary = (bitmap_16[0] & 0x80) != 0
  
@@ -1597,12 +1687,12 @@ def read_len_prefixed_messages_variable(
             row["body"]   = bytes(body_bytes)
  
         yield row
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. STORAGE / PARQUET WRITERS
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 def _canonical_schema_from_de_spec(de_spec: dict) -> pa.Schema:
     fields = [
         pa.field("file_idn",      pa.string()),
@@ -1640,8 +1730,8 @@ def _ensure_and_cast(table: pa.Table, schema: pa.Schema) -> pa.Table:
             arrays.append(pa.nulls(nrows, type=field.type))
  
     return pa.table(arrays, schema=schema)
-
-
+ 
+ 
 def subdir_for_mti(mti: str) -> str:
     mti = str(mti)
     if mti == "1240":
@@ -1653,13 +1743,13 @@ def subdir_for_mti(mti: str) -> str:
     elif mti == "1740":
         return "100_IPM_1740_RAW"
     return "100_IPM_UNK_RAW"
-
-
+ 
+ 
 def _base_dir_for_subdir(fs: FileStorage, layer, client_id: str, file_id: str, subdir: str) -> Path:
     base = Path(fs._get_file_path(layer, client_id, file_id, subdir=subdir))
     return base.parent
-
-
+ 
+ 
 def write_parquet_by_mti_block_streaming(
     df_chunk: pd.DataFrame,
     *,
@@ -1704,8 +1794,8 @@ def finalize_writers(writers: Dict[Tuple[str, int, str], pq.ParquetWriter]) -> N
     for w in writers.values():
         w.close()
     writers.clear()
-
-
+ 
+ 
 def write_parquet_by_mti_block_streaming2(
     df_chunk: pd.DataFrame,
     *,
@@ -1744,8 +1834,8 @@ def write_parquet_by_mti_block_streaming2(
             )
  
         writers[key].write_table(table)
-
-
+ 
+ 
 def extract_fc_from_filepath(filepath: str | Path) -> str:
     name = Path(filepath).name
     return name.rsplit("_", 1)[-1].replace(".parquet", "")
@@ -1799,6 +1889,7 @@ def _process_block(
     target_layer,
     client_id: str,
     file_id: str,
+    content_hash: str = "",
 ) -> None:
     """
     Convierte el buffer de un bloque a DataFrame wide, aplica el contexto
@@ -1835,6 +1926,9 @@ def _process_block(
         df_block["file_idn"] = file_idn
         df_block["file_dt"]  = file_dt
  
+    # Trazabilidad: columna content_hash en cada fila del parquet (igual que VI)
+    df_block["content_hash"] = content_hash
+ 
     write_parquet_by_mti_block_streaming(
         df_chunk=df_block,
         fs=fs,
@@ -1857,6 +1951,7 @@ def interpretate_msg(
     origin_subdir: str = "",
     target_sub_dir: str = "",
     test_path: str = "",
+    content_hash: str = "",
 ) -> list[str]:
     """
     Interpreta un archivo IPM Mastercard y escribe parquets clasificados por MTI y bloque.
@@ -1979,6 +2074,7 @@ def interpretate_msg(
                 target_layer=target_layer,
                 client_id=client_id,
                 file_id=file_id,
+                content_hash=content_hash,
             )
  
             block_buffer.clear()  # ← RAM del bloque liberada aquí
@@ -2005,8 +2101,8 @@ def interpretate_msg(
 # ══════════════════════════════════════════════════════════════════════════════
 
 layer = FileStorage.Layer
-
-
+ 
+ 
 def _normalize_event(event: Any) -> dict[str, Any]:
     """
     Acepta payload directo, payload dentro de body o payload dentro de
@@ -2056,10 +2152,10 @@ def _extract_event_params(
 ) -> tuple[str, str, str, str, str, str, str, str, str, str]:
     """
     Extrae y valida los parámetros del evento.
-
+ 
     Misma estructura de input que vi_transform.py para compatiblidad
     con el payload que emite el router hacia Step Functions:
-
+ 
         client_id, file_id, filename, s3_key_landing, bucket_landing,
         brand, brand_id, file_type, file_date, content_hash
     """
@@ -2093,7 +2189,7 @@ def _extract_event_params(
     )
 
 
-def _pipeline_mc_interpreter(client_id: str, file_id: str) -> list[str]:
+def _pipeline_mc_interpreter(client_id: str, file_id: str, content_hash: str = "") -> list[str]:
     """
     Orquesta únicamente la etapa interpreter Mastercard.
     Equivalente Lambda al llamado local:
@@ -2104,6 +2200,7 @@ def _pipeline_mc_interpreter(client_id: str, file_id: str) -> list[str]:
         target_layer=layer.STAGING,
         client_id=client_id,
         file_id=file_id,
+        content_hash=content_hash,
     )
 
 
@@ -2212,7 +2309,11 @@ def lambda_handler(event, context):
     )
  
     try:
-        uploaded_outputs = _pipeline_mc_interpreter(client_id=client_id, file_id=file_id)
+        uploaded_outputs = _pipeline_mc_interpreter(
+            client_id=client_id,
+            file_id=file_id,
+            content_hash=content_hash,
+        )
         outputs          = _build_outputs_for_calculate(uploaded_outputs)
  
         logger.info(

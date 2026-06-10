@@ -258,17 +258,16 @@ def store_output(
         target_s3_key = clean_s3_key.replace(cln_subdir, target_subdir)
 
         # ── Paso 1: CAL completo en RAM (pocas columnas ~50) ──────────────
-        # Leemos como Arrow primero para capturar los tipos enteros originales.
-        # pandas convierte INT64+nulls → float64 (numpy no tiene int nullable),
-        # lo que haría que el crawler detecte esas columnas como double.
+        # Leemos como Arrow primero para capturar los tipos originales de cada
+        # columna. El round-trip por pandas degrada algunos tipos:
+        #   - INT64+nulls → float64 (numpy no tiene int nullable)
+        #   - string 100% null → pandas object con puros None → pyarrow no
+        #     puede inferir el tipo desde los datos y le asigna NullType
+        # Ambos casos se restauran más abajo a partir de _cal_dtype_map.
         t0 = time.time()
         logger.info("Loading CAL into memory...")
         _cal_arrow = _read_parquet_arrow(STAGING_BUCKET, cal_s3_key)
-        _cal_int_cols = {
-            f.name: f.type
-            for f in _cal_arrow.schema
-            if pa.types.is_integer(f.type)
-        }
+        _cal_dtype_map = {f.name: f.type for f in _cal_arrow.schema}
         cal_df = _cal_arrow.to_pandas()
         if 'record' in cal_df.columns:
             cal_df = cal_df.set_index('record')
@@ -332,16 +331,25 @@ def store_output(
             # Convertir a PyArrow
             merged_table = pa.Table.from_pandas(merged)
 
-            # Restaurar tipos enteros de CAL que pandas degradó a float64.
-            # float64 Arrow → cast a INT64 preserva nulls correctamente.
-            for _col, _atype in _cal_int_cols.items():
-                if _col in merged_table.schema.names:
-                    _idx = merged_table.schema.get_field_index(_col)
-                    if merged_table.schema.field(_idx).type != _atype:
-                        merged_table = merged_table.set_column(
-                            _idx, _col,
-                            merged_table.column(_col).cast(_atype)
-                        )
+            # Restaurar tipos de columnas del CAL que el round-trip por pandas
+            # degradó: enteros con nulls → float64, y columnas 100% null →
+            # NullType (pyarrow no puede inferir el tipo real desde un
+            # object column con puros None). cast() desde NullType o desde
+            # float64 hacia el tipo original preserva los nulls.
+            for _col, _atype in _cal_dtype_map.items():
+                if _col not in merged_table.schema.names:
+                    continue
+                _idx = merged_table.schema.get_field_index(_col)
+                _current_type = merged_table.schema.field(_idx).type
+                if _current_type == _atype:
+                    continue
+                if pa.types.is_null(_current_type) or (
+                    pa.types.is_integer(_atype) and pa.types.is_floating(_current_type)
+                ):
+                    merged_table = merged_table.set_column(
+                        _idx, _col,
+                        merged_table.column(_col).cast(_atype)
+                    )
 
             if writer is None:
                 # Primer batch — capturar schema como referencia
