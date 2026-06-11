@@ -1627,7 +1627,8 @@ def transform_ipm_1644(
         client_id=client_id,
         file_id=file_id,
     )
- 
+    file_processing_date = file_config["file_processing_date"]
+
     # 1) Obtener lista de parquets derivados
     keys = fs.list_parquet_files(
         layer=fs.Layer.STAGING,
@@ -1678,13 +1679,19 @@ def transform_ipm_1644(
         # 6) Generar parquets
         t = perf_counter()
         if df_685 is not None and not df_685.empty:
-            df_685["content_hash"] = content_hash
+            df_685["content_hash"]         = content_hash
+            df_685["file_id"]              = file_id
+            df_685["file_processing_date"] = file_processing_date
             fs.write_parquet(df=df_685, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type, subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_685.parquet")}')
         if df_688 is not None and not df_688.empty:
-            df_688["content_hash"] = content_hash
+            df_688["content_hash"]         = content_hash
+            df_688["file_id"]              = file_id
+            df_688["file_processing_date"] = file_processing_date
             fs.write_parquet(df=df_688, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type, subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_688.parquet")}')
         if df_691 is not None and not df_691.empty:
-            df_691["content_hash"] = content_hash
+            df_691["content_hash"]         = content_hash
+            df_691["file_id"]              = file_id
+            df_691["file_processing_date"] = file_processing_date
             fs.write_parquet(df=df_691, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type,subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_691.parquet")}')
  
         del df_685, df_688, df_691, dfs
@@ -1708,7 +1715,8 @@ def transform_ipm_1740(
         client_id=client_id,
         file_id=file_id,
     )
- 
+    file_processing_date = file_config["file_processing_date"]
+
     #dict_de = db.get_de_layout("1240")
     dict_de, dict_pds = db.get_layout_by_mti("1740")
     _, container_cols = get_base_cols_and_containers("1740")
@@ -1778,7 +1786,9 @@ def transform_ipm_1740(
 
         # 6) Generar parquets
         t = perf_counter()
-        df_expand["content_hash"] = content_hash
+        df_expand["content_hash"]         = content_hash
+        df_expand["file_id"]              = file_id
+        df_expand["file_processing_date"] = file_processing_date
         fs.write_parquet(df=df_expand, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type, subdir= '200_IPM_1740_TRA', filename=filename)
         logging.info(f"[{i}] write_parquet: {perf_counter() - t:.2f}s")
         
