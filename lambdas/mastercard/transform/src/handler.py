@@ -643,6 +643,7 @@ def build_expected_columns(
     cols.extend([
         "file_processing_date",
         "file_id",
+        "content_hash",
     ])
 
     return list(dict.fromkeys(cols))
