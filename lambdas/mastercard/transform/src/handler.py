@@ -342,10 +342,11 @@ class FileStorage:
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
- 
-                if key.endswith(".parquet"):
+                name = key.rsplit("/", 1)[-1]
+
+                if name.startswith(file_id) and name.endswith(".parquet"):
                     keys.append(key)
- 
+
         return keys
 
     def get_landing_object(
