@@ -1,36 +1,26 @@
-﻿{
+{
     "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-exchange-rates",
     "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-exchange-rates",
     "Runtime": "python3.11",
     "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-mc-exchange-rates-role",
     "Handler": "handler.lambda_handler",
-    "CodeSize": 7063,
+    "CodeSize": 9866,
     "Description": "",
-    "Timeout": 300,
-    "MemorySize": 2048,
-    "LastModified": "2026-06-09T15:05:46.000+0000",
-    "CodeSha256": "0Qt4imvG7I4Rpt9KdeWOf2QSaEstsVnR0m1VgXUJfqI=",
+    "Timeout": 600,
+    "MemorySize": 512,
+    "LastModified": "2026-06-10T21:54:08.000+0000",
+    "CodeSha256": "laBoKP6VpZzLLz8uMQNBJSTpNZ44NrR1Zlen5v9W/6M=",
     "Version": "$LATEST",
     "VpcConfig": {
-        "SubnetIds": [
-            "subnet-03cb8477fb39f639e",
-            "subnet-0b02ad525f046501b"
-        ],
-        "SecurityGroupIds": [
-            "sg-07565e1ecf3294bf9"
-        ],
-        "VpcId": "vpc-0101d2c447b67e9db",
+        "SubnetIds": [],
+        "SecurityGroupIds": [],
+        "VpcId": "",
         "Ipv6AllowedForDualStack": false
-    },
-    "Environment": {
-        "Variables": {
-            "testing_1": "a"
-        }
     },
     "TracingConfig": {
         "Mode": "PassThrough"
     },
-    "RevisionId": "562d0a34-f3d2-4f6d-b401-049752fb07a3",
+    "RevisionId": "b99df618-223b-43d3-aa40-50139c02f305",
     "Layers": [
         {
             "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-lambda-layer-pyarrow-curl_cffi:2",

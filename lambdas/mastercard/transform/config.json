@@ -1,15 +1,15 @@
-﻿{
+{
     "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-transform",
     "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-transform",
     "Runtime": "python3.11",
     "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-mc-role",
     "Handler": "handler.lambda_handler",
-    "CodeSize": 13809,
+    "CodeSize": 13859,
     "Description": "",
     "Timeout": 400,
     "MemorySize": 10000,
-    "LastModified": "2026-06-08T20:37:15.000+0000",
-    "CodeSha256": "jv27ChNLqCb8AdLNyxrvm+vYGZuEDnEK1Fi1jht5rNQ=",
+    "LastModified": "2026-06-10T00:36:31.000+0000",
+    "CodeSha256": "mHYwMWxbSI6xaj3PPGC3CuV1xBUMAfEcww1YC3izYLs=",
     "Version": "$LATEST",
     "Environment": {
         "Variables": {
@@ -26,7 +26,7 @@
     "TracingConfig": {
         "Mode": "PassThrough"
     },
-    "RevisionId": "3a8ff1c9-8636-4101-8b37-950089e02ff5",
+    "RevisionId": "7373346f-bab5-40a7-817a-0beea6af293a",
     "Layers": [
         {
             "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:2",

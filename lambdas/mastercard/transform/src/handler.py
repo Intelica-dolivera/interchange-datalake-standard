@@ -1,5 +1,3 @@
-
-
 """
 Core de transformaciones auxiliares para Mastercard transform.
  
@@ -1215,6 +1213,7 @@ def transform_ipm_1240(
     file_id: str,
     file_type: str,
     context=None,
+    content_hash: str = "",
 ) -> None:
 
     t_total = perf_counter()
@@ -1406,6 +1405,7 @@ def transform_ipm_1240(
  
                 chunk["file_processing_date"] = file_processing_date
                 chunk["file_id"] = file_id
+                chunk["content_hash"] = content_hash
  
                 logging.info(
                     f"[{i}.{chunk_idx}] rename_metadata: "
@@ -1504,6 +1504,7 @@ def transform_ipm_1442(
         file_id: str,
         file_type: str,
         context=None,
+        content_hash: str = "",
 ) -> None:
  
     t_total = perf_counter()
@@ -1590,6 +1591,7 @@ def transform_ipm_1442(
         df_expand = df_expand.assign(
             file_processing_date=file_processing_date,
             file_id=file_id,
+            content_hash=content_hash,
         )
  
         logging.info(f"[{i}] expand_assign: {perf_counter() - t:.2f}s | rows={len(df_expand)} | cols={len(df_expand.columns)}")
@@ -1613,6 +1615,7 @@ def transform_ipm_1644(
     file_id: str,
     file_type: str,
     context=None,
+    content_hash: str = "",
 ) -> None:
  
     t_total = perf_counter()
@@ -1675,10 +1678,13 @@ def transform_ipm_1644(
         # 6) Generar parquets
         t = perf_counter()
         if df_685 is not None and not df_685.empty:
+            df_685["content_hash"] = content_hash
             fs.write_parquet(df=df_685, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type, subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_685.parquet")}')
         if df_688 is not None and not df_688.empty:
+            df_688["content_hash"] = content_hash
             fs.write_parquet(df=df_688, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type, subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_688.parquet")}')
         if df_691 is not None and not df_691.empty:
+            df_691["content_hash"] = content_hash
             fs.write_parquet(df=df_691, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type,subdir= '200_IPM_1644_TRA', filename=f'{filename.replace(".parquet", "_691.parquet")}')
  
         del df_685, df_688, df_691, dfs
@@ -1692,6 +1698,7 @@ def transform_ipm_1740(
         file_id: str, 
         file_type: str,
         context=None,
+        content_hash: str = "",
 ) -> None:
     
     t_total = perf_counter()
@@ -1771,6 +1778,7 @@ def transform_ipm_1740(
 
         # 6) Generar parquets
         t = perf_counter()
+        df_expand["content_hash"] = content_hash
         fs.write_parquet(df=df_expand, layer= layer.STAGING , client_id=client_id, file_id=file_id, file_type=file_type, subdir= '200_IPM_1740_TRA', filename=filename)
         logging.info(f"[{i}] write_parquet: {perf_counter() - t:.2f}s")
         
@@ -1921,6 +1929,7 @@ def lambda_handler(event, context):
             client_id=client_id,
             file_id=file_id,
             file_type = file_type,
+            content_hash=content_hash,
         )
  
         logging.info(

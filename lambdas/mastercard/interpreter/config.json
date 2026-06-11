@@ -1,20 +1,20 @@
-﻿{
+{
     "FunctionName": "itl-0004-itx-dev-intchg-02-lmbd-mc-interpreter",
     "FunctionArn": "arn:aws:lambda:eu-south-2:861276092327:function:itl-0004-itx-dev-intchg-02-lmbd-mc-interpreter",
     "Runtime": "python3.11",
     "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-mc-role",
     "Handler": "handler.lambda_handler",
-    "CodeSize": 19130,
+    "CodeSize": 20214,
     "Description": "",
     "Timeout": 480,
     "MemorySize": 10240,
-    "LastModified": "2026-06-10T17:05:19.000+0000",
-    "CodeSha256": "WfJ6y6BgNbk6qQ8SMzzyih9VXb4YVmLEdD1dA6woKfc=",
+    "LastModified": "2026-06-10T19:50:26.000+0000",
+    "CodeSha256": "2hWgONmBF7BRxIZ9WJI1Ba/2LgeN2afwnh1HqcaQ6Pk=",
     "Version": "$LATEST",
     "TracingConfig": {
         "Mode": "PassThrough"
     },
-    "RevisionId": "fe487d12-c857-45ab-922e-3764c1e348be",
+    "RevisionId": "b1888bdb-182d-403b-a5cc-3815489e2814",
     "Layers": [
         {
             "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:2",
