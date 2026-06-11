@@ -650,7 +650,8 @@ def _align_df_1644(df: pd.DataFrame, fc: str, pds_layout: dict) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = pd.NA
 
-    return df[wanted]
+    extras = [c for c in df.columns if c not in set(wanted)]
+    return df[wanted + extras]
 
 
 # ==============================================================================
@@ -693,7 +694,6 @@ def _extract_1644(
         # Merge both rename dicts into a single pass — avoids an intermediate copy.
         df = df.rename(columns={**rename_map, **RENAME_COLS_1644})
         df.columns = [_normalize_col(c) for c in df.columns]
-        df["content_hash"] = content_hash
 
         out_key = _target_key(key, target_prefix, mti="1644", fc=fc)
         _write_parquet(df, out_key)
@@ -764,7 +764,6 @@ def _extract_standard(
             df = _fill_missing_cols(df, missing)
 
         df = _reorder_cols(df, ordered_layout_cols, _FIRST_COLS)
-        df["content_hash"] = content_hash
 
         out_key = _target_key(key, target_prefix, mti=mti)
         _write_parquet(df, out_key)
