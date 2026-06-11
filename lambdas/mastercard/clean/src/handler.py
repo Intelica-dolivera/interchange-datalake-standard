@@ -865,8 +865,7 @@ def _clean_1644(
  
         df_cast = _cast_df(df=df, param=field_defs, currency_decimals_map=currency_map)
         del df
-        df_cast["content_hash"] = content_hash
- 
+
         # Schema rebuilt per file: different FCs yield different column sets.
         schema = _build_arrow_schema(
             field_defs,
@@ -931,8 +930,7 @@ def _clean_standard(
             currency_decimals_map=currency_map,
         )
         del df
-        df_cast["content_hash"] = content_hash
- 
+
         if schema is None:
             schema = _build_arrow_schema(
                 field_defs,
