@@ -115,7 +115,7 @@ Nueva constante: `CLEAN_BATCH_SIZE = int(os.environ.get("ITX_CLEAN_BATCH_SIZE", 
 Nuevo helper `_align_df_to_schema(df, schema) → pa.Table` (extrae la coerción de tipos de `_write_parquet_with_schema`).
 `_write_parquet_with_schema` simplificada: delega en `_align_df_to_schema` y usa `buf.seek(0)` + `put_object(Body=buf)` (elimina `buf.getvalue()` que creaba copia extra).
 
-**Estado:** código modificado localmente. **Pendiente validar** en AWS mañana.
+**Estado:** validado en AWS (2026-06-12). ✓
 
 **Si vuelve a aparecer OOM en cualquiera de estos lambdas después del fix:** verificar que `ITX_*_BATCH_SIZE` no esté en un valor demasiado alto. Reducir a 50,000 si el archivo fuente tiene columnas muy anchas (300+ cols con strings largos). El pico por batch es aproximadamente `batch_size × n_cols × avg_bytes_per_col`.
 
@@ -204,7 +204,7 @@ PyArrow con schema explícito convierte la columna de `None`s al tipo correcto (
 
 **Nota sobre el key-based merge:** se mantiene intencionalmente (vs positional concat) porque es más seguro ante reordenamientos de filas en etapas upstream. Las llaves son `["file_id", "file_idn", "ref_id"]`.
 
-**Validación:** invocación directa del Lambda via `aws lambda invoke --invocation-type Event` con payload construido desde los CLN en staging. Payload guardado en `tst_files/mc-store-payload.json`. Pendiente confirmar resultado en CloudWatch.
+**Validación (2026-06-12):** invocación directa del Lambda via `aws lambda invoke --invocation-type Event` con payload construido desde los CLN en staging (32 outputs: 12×1240, 3×1442, 14×1644, 3×1740). Confirmado SUCCESS en CloudWatch — sin OOM. Payload de referencia en `tst_files/mc-store-payload.json`.
 
 **Si vuelve a aparecer OOM en mc-store:** el pico irreducible es ~2× el CLN más grande del lote. Para el archivo SBSA el CLN más grande es `..._0012601130000000126401151_1240.parquet` (247 MB comprimido → ~1.5–2 GB descomprimido). Si eso no cabe en 10 GB con el merge, la única salida es procesar los outputs del store de a uno por invocación (Step Functions paraleliza).
 
