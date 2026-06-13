@@ -4,17 +4,17 @@
     "Runtime": "python3.11",
     "Role": "arn:aws:iam::861276092327:role/itl-0004-itx-dev-intchg-02-lmbd-mc-role",
     "Handler": "handler.lambda_handler",
-    "CodeSize": 20201,
+    "CodeSize": 20203,
     "Description": "",
-    "Timeout": 480,
+    "Timeout": 900,
     "MemorySize": 10240,
-    "LastModified": "2026-06-11T03:10:03.000+0000",
-    "CodeSha256": "dwZwyrayVyJL9zcUKQoqhQNkVe1xdYp5R6rMAIqTeYM=",
+    "LastModified": "2026-06-11T20:35:57.000+0000",
+    "CodeSha256": "zFk6PbQJgjTKLzckY4pF30e6jOajV3urvX7R7FW4s34=",
     "Version": "$LATEST",
     "TracingConfig": {
         "Mode": "PassThrough"
     },
-    "RevisionId": "f8484b06-7860-474e-9add-54c5d89bfa14",
+    "RevisionId": "07d6e266-ada8-42fb-a0bd-04a225ea4cfb",
     "Layers": [
         {
             "Arn": "arn:aws:lambda:eu-south-2:861276092327:layer:itl-0004-itx-dev-intchg-02-pandas-pyarrow:2",
