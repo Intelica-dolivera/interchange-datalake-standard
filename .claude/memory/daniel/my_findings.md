@@ -210,6 +210,43 @@ PyArrow con schema explícito convierte la columna de `None`s al tipo correcto (
 
 ---
 
+## Router: extraer_fecha_mc no encontraba FC=695 en archivos con separadores no estándar — RESUELTO
+
+**Archivo:** `lambdas/router/src/handler.py` (función `extraer_fecha_mc`, nueva función `_mc_unblock_full`)
+**Detectado:** 2026-06-12 — **RESUELTO y validado (local + archivo pesado ~1.5 GB)**
+
+**Síntoma:** El router asignaba la fecha de hoy como fallback en archivos Mastercard bloqueados (`file_block=True`). El log mostraba 3 chunks leídos y `MC: no se encontró trailer 695`.
+
+**Causa raíz:** `_mc_unblock_chunk` (la función anterior) siempre saltaba exactamente 2 bytes después de cada bloque de 1012 bytes, sin verificar si esos 2 bytes eran un separador válido. El archivo `T112T0.2026-01-01-16-30-05.001` tiene **7,617 separadores no estándar** (ej. `\xf0\xf0`, `\xd4\xf1` — bytes de datos EBCDIC, no espacios `\x40\x40`). El primer separador inválido aparece en el bloque 9,070 (~9.2 MB del inicio). A partir de ahí el stream quedaba corrido 2 bytes, corrompiendo todos los mensajes posteriores. El FC=695 (trailer, siempre al final del archivo) caía en la zona corrupta y `_mc_scan_for_695` no lo reconocía.
+
+Diagnóstico confirmado: `_mc_unblock_chunk` producía 17,293,161 bytes; `unblock_1014` del interpreter producía 17,293,165 bytes (+4). Primera divergencia en offset 9,179,852.
+
+**Herramientas de debugging usadas:**
+- `tst_files/debug_mc_fecha.py` — simula `extraer_fecha_mc` leyendo desde archivo local (parchea `router.s3`)
+- `tst_files/debug_mc_fecha_deep.py` — histograma completo de FCs en mensajes 1644, motivo de fallo por mensaje
+
+**Solución aplicada (2026-06-12):**
+
+1. **Nueva función `_mc_unblock_full`** — replica exactamente `unblock_1014()` del mc_interpreter_handler usando `io.BytesIO` + `valid_seps = (\x40\x40, \x20\x20, \x00\x00, b"")`. Si el separador no está en `valid_seps`, hace pushback (retrocede 2 bytes en el stream) en vez de saltarlos.
+
+2. **`extraer_fecha_mc` reescrita** — reemplaza el loop chunked (múltiples S3 `GetObject Range`) por una descarga completa (1 `GetObject` sin Range) + `_mc_unblock_full` + `_mc_scan_for_695`. Sin cambios en `_mc_scan_for_695` ni en el parseo de fecha.
+
+**Por qué se mantiene `_mc_unblock_chunk`:** se conserva en el código porque la función `_mc_scan_for_695` (y el overlap entre chunks) la usaban — fue reemplazada en `extraer_fecha_mc` pero puede haber otros usos futuros.
+
+**Trade-off Opción A vs B:**
+- **Opción A (elegida):** descarga completa. RAM: ~2× tamaño del archivo (raw + unblocked). Para 17 MB → trivial. Para 1.5 GB → ~3 GB de 8192 MB disponibles — aceptable. 1 llamada S3 vs 3 del loop anterior.
+- **Opción B (descartada por ahora):** chunked con carryover de 2 bytes entre chunks. Menor RAM pero mayor complejidad. Implementar si archivos >500 MB dan problemas con la Opción A.
+
+**Validado (2026-06-12):** `debug_mc_fecha.py` con `T112T0.2026-01-01-16-30-05.001` → fecha extraída `2026-01-01` ✓. Validado también con archivo pesado (~1.5 GB) — sin problemas de memoria ni timeout. Opción B descartada indefinidamente.
+
+**Si vuelve a aparecer (fecha extraída = hoy en archivo MC bloqueado):**
+1. Correr `tst_files/debug_mc_fecha.py <archivo> --blocked`
+2. Si resultado es fallback: correr `tst_files/debug_mc_fecha_deep.py` para ver histograma de FCs
+3. Si hay FC=695 en el histograma: el scan funciona pero algo antes falla
+4. Si no hay FC=695: el archivo genuinamente no tiene trailer, o la zona corrupta lo oculta → comparar output de `_mc_unblock_chunk` vs `_mc_unblock_full` en el archivo específico
+
+---
+
 ## MC transform: list_parquet_files no filtraba por file_id — cross-contamination en ejecuciones paralelas — RESUELTO
 
 **Archivo:** `lambdas/mastercard/transform/src/handler.py` (método `FileStorage.list_parquet_files`)

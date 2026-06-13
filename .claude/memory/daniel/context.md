@@ -36,5 +36,6 @@ metadata:
 
 - Explicar en términos del pipeline (etapas, S3 paths, DynamoDB tables) — ya tiene contexto sólido del sistema
 - Prefiere propuestas antes de ejecutar cambios
-- Trabaja en WSL2 (Ubuntu sobre Windows), PowerShell para scripts AWS
-- Runtime AWS: región `eu-south-2`, cuenta de prueba `itx-dev`
+- Trabaja en WSL2 (Ubuntu sobre Windows) — usar **bash/AWS CLI**, nunca PowerShell ni scripts .ps1
+- AWS profile de Daniel: `interchange-dev` (NO `itx-dev` que es el de Julio)
+- Runtime AWS: región `eu-south-2`, cuenta de prueba
